@@ -130,18 +130,27 @@ function loadNaverMapAndCreate(){
     window.navermap_authFailure = function(){
       reject(new Error('네이버 지도 인증 실패 — Client ID 또는 이 사이트의 도메인 등록을 확인해 주세요.'));
     };
-    // 공식 권장 방식: SDK가 완전히 준비된 그 시점(콜백)에서 곧바로 지도를 생성해야
-    // SDK 내부 초기화와의 타이밍이 어긋나지 않는다(자바스크립트 프로미스로 한 틱 미루면 드물게 내부 상태가 꼬일 수 있음).
+    // SDK가 부르는 callback 시점에도 window.naver 전역 객체 자체가 아직 안 만들어져 있는 경우가 있어서
+    // (SDK 내부 부트 순서상의 타이밍 문제), naver.maps.Map이 실제로 쓸 수 있게 될 때까지 짧게 폴링한다.
     window.__onNaverMapReady = function(){
-      try{
-        const m = new naver.maps.Map('map', {
-          center: new naver.maps.LatLng(36.5, 127.8),
-          zoom: 7,
-          zoomControl: true,
-          zoomControlOptions: { position: naver.maps.Position.TOP_RIGHT }
-        });
-        resolve(m);
-      }catch(e){ reject(e); }
+      let attemptsLeft = 100; // 50ms * 100 = 최대 5초 대기
+      (function tryCreate(){
+        if(window.naver && window.naver.maps && window.naver.maps.Map){
+          try{
+            const m = new naver.maps.Map('map', {
+              center: new naver.maps.LatLng(36.5, 127.8),
+              zoom: 7,
+              zoomControl: true,
+              zoomControlOptions: { position: naver.maps.Position.TOP_RIGHT }
+            });
+            resolve(m);
+          }catch(e){ reject(e); }
+          return;
+        }
+        attemptsLeft--;
+        if(attemptsLeft <= 0){ reject(new Error('네이버 지도 라이브러리 초기화 시간이 초과됐습니다.')); return; }
+        setTimeout(tryCreate, 50);
+      })();
     };
     const s = document.createElement('script');
     s.src = 'https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=' + encodeURIComponent(NAVER_CLIENT_ID) + '&callback=__onNaverMapReady';
