@@ -136,21 +136,43 @@ function loadNaverScript(){
   });
 }
 
+// <script> 태그로 응답을 불러온다(JSONP) — Apps Script 웹앱을 fetch()로 부를 때
+// 가끔 발생하는 리다이렉트 우회 실패 문제를 원천적으로 피하기 위함.
+function fetchCentersViaJsonp(){
+  return new Promise((resolve, reject)=>{
+    const cbName = '__mapCb' + Date.now() + Math.floor(Math.random()*10000);
+    let timeoutId;
+    window[cbName] = function(data){
+      clearTimeout(timeoutId);
+      delete window[cbName];
+      script.remove();
+      if(!data.ok) return reject(new Error(data.error || '데이터를 불러오지 못했습니다.'));
+      resolve(data.centers || []);
+    };
+    const script = document.createElement('script');
+    script.src = APPS_SCRIPT_URL + '?action=getMapCenters&callback=' + cbName + '&_=' + Date.now();
+    script.onerror = ()=>{
+      clearTimeout(timeoutId);
+      delete window[cbName];
+      script.remove();
+      reject(new Error('서버에 연결할 수 없습니다. 잠시 후 새로고침 해주세요.'));
+    };
+    timeoutId = setTimeout(()=>{
+      delete window[cbName];
+      script.remove();
+      reject(new Error('서버 응답이 너무 오래 걸립니다. 잠시 후 새로고침 해주세요.'));
+    }, 15000);
+    document.head.appendChild(script);
+  });
+}
 async function fetchCenters(){
   if(!APPS_SCRIPT_URL){
     throw new Error('APPS_SCRIPT_URL이 설정되지 않았습니다. 파일 상단의 설정값을 채워주세요.');
   }
-  const url = APPS_SCRIPT_URL + '?action=getMapCenters&_=' + Date.now(); // 캐시버스팅(매번 다른 주소로 요청)
   let lastErr = null;
-  for(let attempt=1; attempt<=2; attempt++){ // 구글 리다이렉트가 가끔 일시적으로 실패하는 경우가 있어 최대 2회 시도
+  for(let attempt=1; attempt<=2; attempt++){ // 첫 시도 실패해도 한 번 더 시도(일시적 네트워크 문제 대비)
     try{
-      const res = await fetch(url, { cache: 'no-store', credentials: 'omit' });
-      const text = await res.text();
-      let data;
-      try{ data = JSON.parse(text); }
-      catch(parseErr){ throw new Error('서버 응답이 올바른 형식이 아닙니다(' + res.status + '). 잠시 후 새로고침 해주세요.'); }
-      if(!data.ok) throw new Error(data.error || '데이터를 불러오지 못했습니다.');
-      return data.centers || [];
+      return await fetchCentersViaJsonp();
     }catch(e){
       lastErr = e;
       if(attempt < 2) await new Promise(r=>setTimeout(r, 500));
