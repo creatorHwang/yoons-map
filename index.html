@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>가맹지역본부 지도 — 윤선생</title>
+<style>
+  :root{
+    --pine:#2f5d50; --pine-dark:#1c3d34; --pine-soft:#e6efe9;
+    --ink:#1c2431; --muted:#6b7280; --line:#e3e6df; --bg:#f6f7f4;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;font-family:-apple-system,'Malgun Gothic',sans-serif;background:var(--bg);color:var(--ink)}
+  #app{display:flex;flex-direction:column;height:100vh}
+
+  header{background:#fff;border-bottom:1px solid var(--line);padding:12px 18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;z-index:20}
+  header h1{font-size:16px;font-weight:800;margin:0;color:var(--pine-dark);white-space:nowrap}
+  header .count{font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .search-box{position:relative;flex:1;min-width:180px;max-width:340px}
+  .search-box input{width:100%;box-sizing:border-box;border:1.5px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13.5px;font-family:inherit}
+  .search-box input:focus{outline:none;border-color:var(--pine)}
+  .search-results{position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,.12);max-height:300px;overflow-y:auto;z-index:50;display:none}
+  .search-item{padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+  .search-item:last-child{border-bottom:none}
+  .search-item:hover{background:var(--pine-soft)}
+  .search-item b{color:var(--ink)}
+  .search-item span{color:var(--muted);font-size:11.5px;white-space:nowrap}
+
+  .bm-filters{display:flex;gap:6px;flex-wrap:wrap}
+  .bm-chip{border:1px solid var(--line);border-radius:14px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;background:#fff;color:var(--ink);white-space:nowrap}
+  .bm-chip.active{color:#fff;border-color:transparent}
+
+  #mapWrap{position:relative;flex:1}
+  #map{position:absolute;inset:0}
+
+  .marker-box{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:#fff;border:2px solid var(--pine);border-radius:8px;
+    padding:3px 8px 4px;box-shadow:0 2px 6px rgba(0,0,0,.18);
+    white-space:nowrap;cursor:pointer;transform:translate(-50%,-100%);
+    position:relative;
+  }
+  .marker-box::after{
+    content:'';position:absolute;left:50%;bottom:-7px;transform:translateX(-50%);
+    border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid var(--pine);
+  }
+  .marker-bm{font-size:9.5px;font-weight:700;color:var(--muted);line-height:1.1}
+  .marker-name{font-size:12.5px;font-weight:800;color:var(--ink);line-height:1.2}
+
+  .cluster-box{
+    display:flex;align-items:center;justify-content:center;
+    width:44px;height:44px;border-radius:50%;
+    background:var(--pine);color:#fff;font-weight:800;font-size:13px;
+    box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer;
+    transform:translate(-50%,-50%);border:3px solid #fff;
+  }
+
+  .status-banner{position:absolute;top:12px;left:50%;transform:translateX(-50%);
+    background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 18px;
+    font-size:13px;color:var(--muted);box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:15}
+  .status-banner.error{color:#c0392b;border-color:#f3c9c4;background:#fdeeec}
+
+  .legend{position:absolute;bottom:16px;left:16px;background:#fff;border:1px solid var(--line);
+    border-radius:8px;padding:10px 14px;font-size:11.5px;color:var(--muted);box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:15}
+  .legend div{display:flex;align-items:center;gap:6px;margin-top:3px}
+  .legend .dot{width:9px;height:9px;border-radius:50%;flex:none}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>📍 가맹지역본부 지도</h1>
+    <span class="count" id="countLabel">불러오는 중…</span>
+    <div class="search-box">
+      <input type="text" id="searchInput" placeholder="🔍 센터명으로 찾기" oninput="onSearchInput(this.value)"
+        onkeydown="if(event.key==='Escape'){this.value='';onSearchInput('');}">
+      <div id="searchResults" class="search-results"></div>
+    </div>
+    <div class="bm-filters" id="bmFilters"></div>
+  </header>
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div class="legend" id="legend" style="display:none"></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   설정 — 이 두 값만 채우면 바로 작동합니다
+   ============================================================ */
+const NAVER_CLIENT_ID = 'mzg4yqh4je'; // 네이버클라우드플랫폼 콘솔에서 발급받은 Client ID
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwNhaDXFVqrJ6i9LMhz9mqj9vlQYVtSl0eOrlpbV_qXYLyA4fshBWZrc0KJnZUyCPs/exec';
+
+/* ============================================================ */
+
+const BM_COLORS = {
+  '숲':'#0891b2', 'IGSE':'#1e40af', '상가형':'#7c3aed', '학원':'#2f5d50',
+  '교습소':'#c2410c', '공부방':'#b4762a', '우영':'#60a5fa'
+};
+const DEFAULT_COLOR = '#4b5563';
+function bmColor(bm){
+  for(const k in BM_COLORS){ if(bm && bm.includes(k)) return BM_COLORS[k]; }
+  return DEFAULT_COLOR;
+}
+
+let map = null;
+let allCenters = [];       // 서버에서 받은 원본 전체
+let visibleCenters = [];   // BM 필터 적용된 목록
+let _bmActive = null;      // null = 전체, 문자열 = 그 BM만
+let _renderedOverlays = [];
+
+function showStatus(msg, isError){
+  let el = document.getElementById('statusBanner');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'statusBanner';
+    el.className = 'status-banner';
+    document.getElementById('mapWrap').appendChild(el);
+  }
+  el.textContent = msg;
+  el.className = 'status-banner' + (isError ? ' error' : '');
+  el.style.display = msg ? '' : 'none';
+}
+
+function loadNaverScript(){
+  return new Promise((resolve, reject)=>{
+    if(window.naver && window.naver.maps){ resolve(); return; }
+    window.navermap_authFailure = function(){
+      reject(new Error('네이버 지도 인증 실패 — Client ID 또는 이 사이트의 도메인 등록을 확인해 주세요.'));
+    };
+    window.__onNaverMapReady = function(){ resolve(); }; // 공식 권장: callback 파라미터로 완전 로드 시점을 정확히 통보받음
+    const s = document.createElement('script');
+    s.src = 'https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=' + encodeURIComponent(NAVER_CLIENT_ID) + '&callback=__onNaverMapReady';
+    s.onerror = ()=>reject(new Error('네이버 지도 스크립트를 불러오지 못했습니다.'));
+    document.head.appendChild(s);
+  });
+}
+
+async function fetchCenters(){
+  if(!APPS_SCRIPT_URL){
+    throw new Error('APPS_SCRIPT_URL이 설정되지 않았습니다. 파일 상단의 설정값을 채워주세요.');
+  }
+  const res = await fetch(APPS_SCRIPT_URL + '?action=getMapCenters');
+  const data = await res.json();
+  if(!data.ok) throw new Error(data.error || '데이터를 불러오지 못했습니다.');
+  return data.centers || [];
+}
+
+function buildBmFilters(){
+  const bms = Array.from(new Set(allCenters.map(c=>c.bm).filter(Boolean))).sort();
+  const wrap = document.getElementById('bmFilters');
+  const allChip = `<div class="bm-chip ${_bmActive===null?'active':''}" style="${_bmActive===null?`background:${'var(--pine)'}`:''}" onclick="setBmFilter(null)">전체</div>`;
+  const chips = bms.map(bm=>{
+    const active = _bmActive===bm;
+    const color = bmColor(bm);
+    return `<div class="bm-chip ${active?'active':''}" style="${active?`background:${color}`:''}" onclick="setBmFilter('${bm.replace(/'/g,"\\'")}')">${bm}</div>`;
+  }).join('');
+  wrap.innerHTML = allChip + chips;
+
+  const legend = document.getElementById('legend');
+  legend.innerHTML = bms.map(bm=>`<div><span class="dot" style="background:${bmColor(bm)}"></span>${bm}</div>`).join('');
+  legend.style.display = bms.length ? '' : 'none';
+}
+function setBmFilter(bm){
+  _bmActive = bm;
+  buildBmFilters();
+  applyFilterAndRender();
+}
+function applyFilterAndRender(){
+  visibleCenters = _bmActive ? allCenters.filter(c=>c.bm===_bmActive) : allCenters.slice();
+  document.getElementById('countLabel').textContent = `${visibleCenters.length.toLocaleString()}개 센터 표시 중`;
+  renderMarkers();
+}
+
+/* ── 검색 ── */
+function onSearchInput(v){
+  const box = document.getElementById('searchResults');
+  const q = v.trim().toLowerCase();
+  if(!q){ box.style.display='none'; box.innerHTML=''; return; }
+  const matches = allCenters.filter(c=>c.name.toLowerCase().includes(q)).slice(0,15);
+  if(!matches.length){ box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 센터가 없습니다.</div>'; box.style.display=''; return; }
+  box.innerHTML = matches.map((c,i)=>`<div class="search-item" onclick="jumpTo(${i})"><b>${c.name}</b><span>${c.bm||''}</span></div>`).join('');
+  box._matches = matches;
+  box.style.display = '';
+}
+function jumpTo(i){
+  const box = document.getElementById('searchResults');
+  const c = box._matches[i];
+  box.style.display='none';
+  document.getElementById('searchInput').value='';
+  map.morph(new naver.maps.LatLng(c.lat, c.lng), 15);
+}
+
+/* ── 마커 렌더링(그리드 기반 클러스터링) ── */
+function clearOverlays(){
+  _renderedOverlays.forEach(o=>o.setMap(null));
+  _renderedOverlays = [];
+}
+function makeMarkerOverlay(center){
+  const pos = new naver.maps.LatLng(center.lat, center.lng);
+  const color = bmColor(center.bm);
+  const content = `<div class="marker-box" style="border-color:${color}"><div class="marker-bm" style="color:${color}">${center.bm||''}</div><div class="marker-name">${center.name}</div></div>`;
+  const marker = new naver.maps.Marker({
+    position: pos, map: map,
+    icon: { content, anchor: new naver.maps.Point(0,0) }
+  });
+  return marker;
+}
+function makeClusterOverlay(lat, lng, count, bounds){
+  const marker = new naver.maps.Marker({
+    position: new naver.maps.LatLng(lat, lng), map: map,
+    icon: { content: `<div class="cluster-box">${count}</div>`, anchor: new naver.maps.Point(22,22) }
+  });
+  naver.maps.Event.addListener(marker, 'click', ()=>{
+    map.morph(map.getCenter(), Math.min(map.getZoom()+3, 18));
+    map.panTo(new naver.maps.LatLng(lat,lng));
+  });
+  return marker;
+}
+function renderMarkers(){
+  if(!map) return;
+  clearOverlays();
+  if(!visibleCenters.length) return;
+  const zoom = map.getZoom();
+
+  // 줌 레벨이 충분히 높으면(마커들이 서로 안 겹칠 정도) 클러스터링 없이 그대로 표시
+  if(zoom >= 13){
+    visibleCenters.forEach(c=>{ _renderedOverlays.push(makeMarkerOverlay(c)); });
+    return;
+  }
+
+  // 격자 기반 클러스터링: 줌이 낮을수록 격자 칸을 크게
+  const bounds = map.getBounds();
+  const proj = map.getProjection();
+  // 지도가 화면에 완전히 자리잡기 전에는 getProjection()이 null을 반환할 수 있음 — 잠시 후 재시도
+  if(!bounds || !proj){ setTimeout(renderMarkers, 150); return; }
+  const cellPx = 60; // 화면 픽셀 기준 격자 크기
+  const buckets = {};
+
+  visibleCenters.forEach(c=>{
+    const latlng = new naver.maps.LatLng(c.lat, c.lng);
+    if(!bounds.hasLatLng(latlng)) return; // 화면 밖이면 스킵(성능)
+    const pt = proj.fromCoordToOffset(latlng);
+    const key = Math.floor(pt.x/cellPx) + '_' + Math.floor(pt.y/cellPx);
+    if(!buckets[key]) buckets[key] = [];
+    buckets[key].push(c);
+  });
+
+  Object.values(buckets).forEach(group=>{
+    if(group.length === 1){
+      _renderedOverlays.push(makeMarkerOverlay(group[0]));
+    } else {
+      const avgLat = group.reduce((s,c)=>s+c.lat,0)/group.length;
+      const avgLng = group.reduce((s,c)=>s+c.lng,0)/group.length;
+      _renderedOverlays.push(makeClusterOverlay(avgLat, avgLng, group.length));
+    }
+  });
+}
+
+async function init(){
+  try{
+    showStatus('네이버 지도를 불러오는 중…');
+    await loadNaverScript();
+    map = new naver.maps.Map('map', {
+      center: new naver.maps.LatLng(36.5, 127.8),
+      zoom: 7,
+      zoomControl: true,
+      zoomControlOptions: { position: naver.maps.Position.TOP_RIGHT }
+    });
+    naver.maps.Event.addListener(map, 'idle', renderMarkers);
+
+    showStatus('센터 데이터를 불러오는 중…');
+    allCenters = await fetchCenters();
+    showStatus('');
+
+    if(!allCenters.length){
+      showStatus('표시할 센터가 없습니다 — Google Sheet에 좌표(K·L열)가 채워졌는지 확인해 주세요.', true);
+    }
+    buildBmFilters();
+    applyFilterAndRender();
+  }catch(e){
+    showStatus('⚠️ ' + e.message, true);
+    console.error(e);
+  }
+}
+init();
+</script>
+</body>
+</html>
