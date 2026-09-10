@@ -72,7 +72,7 @@
     <h1>📍 가맹지역본부 지도</h1>
     <span class="count" id="countLabel">불러오는 중…</span>
     <div class="search-box">
-      <input type="text" id="searchInput" placeholder="🔍 센터명으로 찾기" oninput="onSearchInput(this.value)"
+      <input type="text" id="searchInput" placeholder="🔍 주소로 찾기(예: 강남구, 수원시 등)" oninput="onSearchInput(this.value)"
         onkeydown="if(event.key==='Escape'){this.value='';onSearchInput('');}">
       <div id="searchResults" class="search-results"></div>
     </div>
@@ -177,9 +177,9 @@ function onSearchInput(v){
   const box = document.getElementById('searchResults');
   const q = v.trim().toLowerCase();
   if(!q){ box.style.display='none'; box.innerHTML=''; return; }
-  const matches = allCenters.filter(c=>c.name.toLowerCase().includes(q)).slice(0,15);
-  if(!matches.length){ box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 센터가 없습니다.</div>'; box.style.display=''; return; }
-  box.innerHTML = matches.map((c,i)=>`<div class="search-item" onclick="jumpTo(${i})"><b>${c.name}</b><span>${c.bm||''}</span></div>`).join('');
+  const matches = allCenters.filter(c=>(c.address||'').toLowerCase().includes(q)).slice(0,15);
+  if(!matches.length){ box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 주소가 없습니다.</div>'; box.style.display=''; return; }
+  box.innerHTML = matches.map((c,i)=>`<div class="search-item" onclick="jumpTo(${i})"><b>${c.name}</b><span>${c.address||''}</span></div>`).join('');
   box._matches = matches;
   box.style.display = '';
 }
@@ -217,8 +217,23 @@ function makeClusterOverlay(lat, lng, count, bounds){
   });
   return marker;
 }
+let _renderRetryCount = 0;
 function renderMarkers(){
   if(!map) return;
+  try{
+    _renderMarkersInner();
+    _renderRetryCount = 0;
+  }catch(e){
+    _renderRetryCount++;
+    if(_renderRetryCount > 30){ // 6초 넘게 실패하면 그제서야 사용자에게 알림
+      showStatus('⚠️ 지도를 표시하는 데 문제가 있습니다. 새로고침 해주세요. (' + e.message + ')', true);
+      console.error(e);
+      return;
+    }
+    setTimeout(renderMarkers, 200); // 지도가 아직 화면에 완전히 자리잡지 못한 경우 — 잠시 후 재시도
+  }
+}
+function _renderMarkersInner(){
   clearOverlays();
   if(!visibleCenters.length) return;
   const zoom = map.getZoom();
@@ -232,8 +247,8 @@ function renderMarkers(){
   // 격자 기반 클러스터링: 줌이 낮을수록 격자 칸을 크게
   const bounds = map.getBounds();
   const proj = map.getProjection();
-  // 지도가 화면에 완전히 자리잡기 전에는 getProjection()이 null을 반환할 수 있음 — 잠시 후 재시도
-  if(!bounds || !proj){ setTimeout(renderMarkers, 150); return; }
+  // 지도가 화면에 완전히 자리잡기 전에는 null을 반환할 수 있음 — 예외를 던져서 바깥의 재시도 로직이 처리하게 함
+  if(!bounds || !proj) throw new Error('지도 초기화 대기 중');
   const cellPx = 60; // 화면 픽셀 기준 격자 크기
   const buckets = {};
 
@@ -277,7 +292,9 @@ async function init(){
       showStatus('표시할 센터가 없습니다 — Google Sheet에 좌표(K·L열)가 채워졌는지 확인해 주세요.', true);
     }
     buildBmFilters();
-    applyFilterAndRender();
+    visibleCenters = allCenters.slice();
+    document.getElementById('countLabel').textContent = `${visibleCenters.length.toLocaleString()}개 센터 표시 중`;
+    setTimeout(renderMarkers, 100); // 지도가 최초로 화면에 자리잡을 시간을 살짝 줌
   }catch(e){
     showStatus('⚠️ ' + e.message, true);
     console.error(e);
