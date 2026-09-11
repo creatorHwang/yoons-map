@@ -135,7 +135,8 @@ function loadNaverMapAndCreate(){
     window.__onNaverMapReady = function(){
       let attemptsLeft = 100; // 50ms * 100 = 최대 5초 대기
       (function tryCreate(){
-        if(window.naver && window.naver.maps && window.naver.maps.Map){
+        const m = window.naver && window.naver.maps;
+        if(m && m.Map && m.LatLng && m.Marker && m.LatLngBounds && m.Event && m.Position){
           try{
             const m = new naver.maps.Map('map', {
               center: new naver.maps.LatLng(36.5, 127.8),
@@ -295,7 +296,15 @@ function renderMarkers(){
   }
   if(!clustered){
     clearOverlays();
-    visibleCenters.forEach(c=>{ _renderedOverlays.push(makeMarkerOverlay(c)); });
+    let failCount = 0;
+    visibleCenters.forEach(c=>{
+      try{ _renderedOverlays.push(makeMarkerOverlay(c)); }
+      catch(e){ failCount++; } // 지도가 아직 준비 중이면 개별 마커 생성이 실패할 수 있음 — 건너뛰고 계속 진행
+    });
+    if(failCount > 0 && failCount === visibleCenters.length){
+      // 전부 실패했다면 지도 SDK가 아직 준비되지 않은 것 — 잠시 후 다시 시도
+      setTimeout(renderMarkers, 300);
+    }
   }
 }
 // 클러스터링을 시도한다. 성공하면 true, 지도가 아직 완전히 준비되지 않아 계산에 실패하면 예외를 던진다.
