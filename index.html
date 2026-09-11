@@ -136,7 +136,7 @@ function loadNaverMapAndCreate(){
       let attemptsLeft = 100; // 50ms * 100 = 최대 5초 대기
       (function tryCreate(){
         const m = window.naver && window.naver.maps;
-        if(m && m.Map && m.LatLng && m.Marker && m.LatLngBounds && m.Event && m.Position){
+        if(m && m.Map && m.LatLng && m.Marker && m.LatLngBounds && m.Event && m.Position && m.Point){
           try{
             const m = new naver.maps.Map('map', {
               center: new naver.maps.LatLng(36.5, 127.8),
@@ -283,6 +283,8 @@ function makeClusterOverlay(lat, lng, count, bounds){
   });
   return marker;
 }
+let _renderFailCount = 0;
+const RENDER_MAX_RETRY = 20; // 이 횟수를 넘으면 재시도를 멈추고 사용자에게 안내
 function renderMarkers(){
   if(!map) return;
   clearOverlays();
@@ -302,10 +304,16 @@ function renderMarkers(){
       catch(e){ failCount++; } // 지도가 아직 준비 중이면 개별 마커 생성이 실패할 수 있음 — 건너뛰고 계속 진행
     });
     if(failCount > 0 && failCount === visibleCenters.length){
-      // 전부 실패했다면 지도 SDK가 아직 준비되지 않은 것 — 잠시 후 다시 시도
-      setTimeout(renderMarkers, 300);
+      _renderFailCount++;
+      if(_renderFailCount > RENDER_MAX_RETRY){
+        showStatus('⚠️ 네이버 지도 라이브러리를 불러오지 못했습니다. 페이지를 새로고침 해주세요. (Marker 초기화 실패)', true);
+        return; // 더 이상 재시도하지 않음 — 무한 루프 방지
+      }
+      setTimeout(renderMarkers, 300); // 지도가 아직 준비 중일 수 있어 잠시 후 다시 시도(최대 RENDER_MAX_RETRY회)
+      return;
     }
   }
+  _renderFailCount = 0; // 한 번이라도 정상 렌더되면 카운터 초기화
 }
 // 클러스터링을 시도한다. 성공하면 true, 지도가 아직 완전히 준비되지 않아 계산에 실패하면 예외를 던진다.
 function renderWithClustering(){
