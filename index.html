@@ -133,6 +133,12 @@ function loadNaverMapAndCreate(){
     // SDK가 부르는 callback 시점에도 window.naver 전역 객체 자체가 아직 안 만들어져 있는 경우가 있어서
     // (SDK 내부 부트 순서상의 타이밍 문제), naver.maps.Map이 실제로 쓸 수 있게 될 때까지 짧게 폴링한다.
     window.__onNaverMapReady = function(){
+      window.__naverCbCount = (window.__naverCbCount || 0) + 1;
+      console.log('[진단] __onNaverMapReady 호출 횟수:', window.__naverCbCount);
+      if(window.__naverCbCount > 1){
+        console.warn('[진단] 콜백이 ' + window.__naverCbCount + '번째로 다시 호출됐습니다 — 이전 폴링 체인은 무시합니다.');
+        return; // 이미 첫 번째 호출로 지도 생성을 시작했다면, 추가 호출은 완전히 무시(중복 생성 방지)
+      }
       let attemptsLeft = 100; // 50ms * 100 = 최대 5초 대기
       (function tryCreate(){
         const m = window.naver && window.naver.maps;
