@@ -358,6 +358,16 @@ async function init(){
   try{
     showStatus('네이버 지도를 불러오는 중…');
     map = await loadNaverMapAndCreate();
+
+    // 진단 모드: 주소 끝에 ?nomarker 를 붙이면 마커 관련 코드를 전혀 실행하지 않고
+    // 지도(naver.maps.Map)만 띄운다 — Marker 관련 에러가 지도 자체 문제인지,
+    // 마커를 실제로 만들 때만 나는 문제인지 구분하기 위한 테스트용.
+    if(location.search.includes('nomarker')){
+      showStatus('🔧 진단 모드 — 마커 없이 지도만 표시 중');
+      document.getElementById('countLabel').textContent = '진단 모드(마커 미표시)';
+      return;
+    }
+
     naver.maps.Event.addListener(map, 'idle', renderMarkers);
 
     showStatus('센터 데이터를 불러오는 중…');
