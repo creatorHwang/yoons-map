@@ -21,12 +21,13 @@
   .search-box input:focus{outline:none;border-color:var(--pine)}
   .search-btn{flex:none;border:none;background:var(--pine);color:#fff;border-radius:8px;padding:0 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
   .search-btn:hover{background:var(--pine-dark)}
-  .search-results{position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,.12);max-height:300px;overflow-y:auto;z-index:50;display:none}
+  .search-results{position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,.12);max-height:340px;overflow-y:auto;z-index:50;display:none}
   .search-item{padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
   .search-item:last-child{border-bottom:none}
   .search-item:hover{background:var(--pine-soft)}
   .search-item b{color:var(--ink)}
-  .search-item span{color:var(--muted);font-size:11.5px;white-space:nowrap}
+  .search-item span{color:var(--muted);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+  .search-divider{padding:5px 12px;font-size:10.5px;color:var(--muted);background:var(--bg);font-weight:800}
 
   .bm-filters{display:flex;gap:6px;flex-wrap:wrap}
   .bm-chip{border:1px solid var(--line);border-radius:14px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;background:#fff;color:var(--ink);white-space:nowrap}
@@ -66,6 +67,16 @@
     border-radius:8px;padding:10px 14px;font-size:11.5px;color:var(--muted);box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:15}
   .legend div{display:flex;align-items:center;gap:6px;margin-top:3px}
   .legend .dot{width:9px;height:9px;border-radius:50%;flex:none}
+
+  /* 거리·면적·반경 재기 + 지적편집도 도구 패널 */
+  .tool-panel{position:absolute;bottom:16px;right:16px;background:#fff;border:1px solid var(--line);
+    border-radius:8px;padding:8px;box-shadow:0 4px 12px rgba(0,0,0,.12);z-index:16;
+    display:flex;flex-direction:column;gap:4px;min-width:112px}
+  .tool-btn{border:1px solid var(--line);border-radius:6px;padding:7px 10px;font-size:12px;font-weight:700;
+    cursor:pointer;background:#fff;color:var(--ink);white-space:nowrap;text-align:left;font-family:inherit}
+  .tool-btn:hover{background:var(--pine-soft)}
+  .tool-btn.active{background:var(--pine);color:#fff;border-color:var(--pine)}
+  .measure-result{font-size:12px;font-weight:800;color:var(--pine-dark);padding:2px 2px 4px;display:none}
 </style>
 </head>
 <body>
@@ -74,7 +85,7 @@
     <h1>📍 가맹지역본부 지도</h1>
     <span class="count" id="countLabel">불러오는 중…</span>
     <div class="search-box">
-      <input type="text" id="searchInput" placeholder="🔍 주소로 찾기(예: 강남구, 수원시 등)" oninput="onSearchInput(this.value)"
+      <input type="text" id="searchInput" placeholder="🔍 센터명·주소·아파트·학교 등으로 찾기" oninput="onSearchInput(this.value)"
         onkeydown="if(event.key==='Escape'){this.value='';onSearchInput('');} if(event.key==='Enter'){onSearchSubmit();}">
       <button class="search-btn" onclick="onSearchSubmit()">찾기</button>
       <div id="searchResults" class="search-results"></div>
@@ -84,6 +95,14 @@
   <div id="mapWrap">
     <div id="map"></div>
     <div class="legend" id="legend" style="display:none"></div>
+    <div class="tool-panel">
+      <div id="measureResult" class="measure-result"></div>
+      <button class="tool-btn" id="tool-distance" onclick="selectMeasureTool('distance')">📏 거리재기</button>
+      <button class="tool-btn" id="tool-area" onclick="selectMeasureTool('area')">📐 면적재기</button>
+      <button class="tool-btn" id="tool-radius" onclick="selectMeasureTool('radius')">⭕ 반경재기</button>
+      <button class="tool-btn" id="tool-clear" onclick="clearMeasurements()">🗑️ 그린 것 지우기</button>
+      <button class="tool-btn" id="tool-cadastral" onclick="toggleCadastral()">🗺️ 지적편집도</button>
+    </div>
   </div>
 </div>
 
@@ -111,6 +130,10 @@ let allCenters = [];       // 서버에서 받은 원본 전체
 let visibleCenters = [];   // BM 필터 적용된 목록
 let _bmActive = null;      // null = 전체, 문자열 = 그 BM만
 let _renderedOverlays = [];
+let placesService = null;  // 카카오 장소 검색(주소/아파트/학교 등) 서비스 객체
+let drawingManager = null; // 거리·면적·반경 재기를 담당하는 Drawing 라이브러리 객체
+let currentDrawMode = null;
+let cadastralOn = false;
 
 function showStatus(msg, isError){
   let el = document.getElementById('statusBanner');
@@ -125,16 +148,30 @@ function showStatus(msg, isError){
   el.style.display = msg ? '' : 'none';
 }
 
+/* ── 브라우저 위치정보로 초기 지도 중심 결정 ──
+   허용하지 않거나 실패하면 null을 반환하고, 이 경우 대한민국 전체 화면으로 시작한다.
+   6초 안에 응답이 없어도 포기하고 전체 화면으로 시작한다(무한 대기 방지).
+*/
+function getUserLocation(timeoutMs){
+  return new Promise((resolve)=>{
+    if(!navigator.geolocation){ resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => resolve(null),
+      { timeout: timeoutMs, maximumAge: 300000 }
+    );
+  });
+}
+
 /* ── 카카오 지도 SDK 로딩 ──
    autoload=false 로 불러온 뒤 kakao.maps.load(콜백)을 쓰면,
    콜백이 실행되는 시점엔 kakao.maps 하위 객체가 전부 100% 준비돼 있는 게 보장된다.
-   (네이버 버전에서 겪었던 "콜백은 왔는데 아직 naver.maps.Marker 등이 없음" 폴링 문제가
-    카카오에서는 애초에 발생하지 않는 구조 — 그래서 폴링 코드를 걷어냈다)
+   services(장소검색), drawing(거리·면적·반경 재기) 라이브러리를 함께 불러온다.
 */
-function loadKakaoMapAndCreate(){
+function loadKakaoMapAndCreate(startLoc){
   return new Promise((resolve, reject)=>{
     const s = document.createElement('script');
-    s.src = 'https://dapi.kakao.com/v2/maps/sdk.js?appkey=' + encodeURIComponent(KAKAO_APP_KEY) + '&autoload=false';
+    s.src = 'https://dapi.kakao.com/v2/maps/sdk.js?appkey=' + encodeURIComponent(KAKAO_APP_KEY) + '&autoload=false&libraries=services,drawing';
     s.onerror = ()=>reject(new Error('카카오 지도 스크립트를 불러오지 못했습니다. 네트워크 상태를 확인해 주세요.'));
     s.onload = ()=>{
       if(!window.kakao || !window.kakao.maps){
@@ -143,10 +180,11 @@ function loadKakaoMapAndCreate(){
       }
       kakao.maps.load(function(){
         try{
-          const m = new kakao.maps.Map(document.getElementById('map'), {
-            center: new kakao.maps.LatLng(36.5, 127.8),
-            level: 13 // 대한민국 전체가 보이는 정도(숫자가 작을수록 확대됨 — 네이버의 zoom과 반대 방향)
-          });
+          const center = startLoc
+            ? new kakao.maps.LatLng(startLoc.lat, startLoc.lng)
+            : new kakao.maps.LatLng(36.5, 127.8);
+          const level = startLoc ? 4 : 13; // 4 = "동" 정도로 확대된 수준, 13 = 대한민국 전체가 보이는 수준
+          const m = new kakao.maps.Map(document.getElementById('map'), { center, level });
           const zoomControl = new kakao.maps.ZoomControl();
           m.addControl(zoomControl, kakao.maps.ControlPosition.RIGHT);
           resolve(m);
@@ -154,9 +192,6 @@ function loadKakaoMapAndCreate(){
       });
     };
     document.head.appendChild(s);
-    // 주의: 이 사이트의 도메인이 카카오 개발자 콘솔에 등록돼 있지 않으면,
-    // 스크립트 자체는 로드되지만 브라우저에 "등록되지 않은 도메인입니다" 알림창이 뜨고
-    // 지도가 빈 화면으로 남는다(이 경우는 코드로 감지되는 에러가 아니라 SDK가 자체적으로 띄우는 알림임).
   });
 }
 
@@ -228,32 +263,76 @@ function applyFilterAndRender(){
   renderMarkers();
 }
 
-/* ── 검색 ── (변경 없음) */
+/* ── 검색 ──
+   1) 입력할 때마다: 우리 센터 목록(무료, 즉시)만 빠르게 보여준다.
+   2) "찾기"를 누르거나 Enter를 치면: 카카오 장소 검색(주소/아파트/학교 등)을 추가로 불러와 아래에 덧붙인다.
+      (모든 키 입력마다 카카오 장소 검색을 부르면 무료 쿼터를 빨리 소진하므로, 검색을 확정한 시점에만 호출한다)
+*/
 function onSearchInput(v){
   const box = document.getElementById('searchResults');
+  box._placeMatches = null; // 입력이 바뀌면 이전 "주변 장소" 결과는 무효화
   const q = v.trim().toLowerCase();
   if(!q){ box.style.display='none'; box.innerHTML=''; return; }
-  const matches = allCenters.filter(c=>(c.address||'').toLowerCase().includes(q)).slice(0,15);
-  if(!matches.length){ box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 주소가 없습니다.</div>'; box.style.display='block'; return; }
+  const matches = allCenters.filter(c=>(c.address||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q)).slice(0,15);
+  if(!matches.length){
+    box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 센터가 없습니다. (Enter를 누르면 주변 장소도 찾아봅니다)</div>';
+    box.style.display = 'block';
+    box._matches = [];
+    return;
+  }
   box.innerHTML = matches.map((c,i)=>`<div class="search-item" onclick="jumpTo(${i})"><b>${c.name}</b><span>${c.address||''}</span></div>`).join('');
   box._matches = matches;
   box.style.display = 'block';
 }
 function onSearchSubmit(){
-  const v = document.getElementById('searchInput').value;
+  const v = document.getElementById('searchInput').value.trim();
+  if(!v) return;
   onSearchInput(v);
   const box = document.getElementById('searchResults');
-  if(box._matches && box._matches.length === 1){ jumpTo(0); }
+  if(box._matches && box._matches.length === 1){
+    jumpTo(0); // 우리 센터가 정확히 1건이면 바로 이동(기존 동작 유지)
+    return;
+  }
+  searchPlacesAndAppend(v);
 }
 function jumpTo(i){
   const box = document.getElementById('searchResults');
   const c = box._matches[i];
   box.style.display='none';
   document.getElementById('searchInput').value='';
-  // 카카오는 네이버의 morph(부드러운 이동+확대 한번에)에 해당하는 단일 함수가 없어서
-  // 레벨 변경과 중심 이동을 각각 호출한다. level 3 = 건물이 보일 정도로 가까이 확대.
   map.setLevel(3, {animate:true});
   map.panTo(new kakao.maps.LatLng(c.lat, c.lng));
+}
+
+function ensurePlacesService(){
+  if(!placesService) placesService = new kakao.maps.services.Places();
+  return placesService;
+}
+// 카카오 키워드 장소 검색 — 도로명 주소, 아파트, 학교, 건물명 등 일반 장소를 찾아 기존 검색 결과 아래에 덧붙인다.
+function searchPlacesAndAppend(keyword){
+  const box = document.getElementById('searchResults');
+  ensurePlacesService().keywordSearch(keyword, function(result, status){
+    if(status !== kakao.maps.services.Status.OK) return; // 결과 없음/오류 시 조용히 무시(센터 검색 결과는 이미 떠 있음)
+    const top = result.slice(0, 8);
+    box._placeMatches = top;
+    const placesHtml = top.map((p,i)=>
+      `<div class="search-item" onclick="jumpToPlace(${i})"><b>📍 ${p.place_name}</b><span>${p.road_address_name || p.address_name || ''}</span></div>`
+    ).join('');
+    if(placesHtml){
+      // "일치하는 센터가 없습니다" 안내문이 떠 있었다면 지우고 장소 결과로 교체
+      if(!box._matches || !box._matches.length){ box.innerHTML = ''; }
+      box.innerHTML += `<div class="search-divider">주변 장소(주소·아파트·학교 등)</div>` + placesHtml;
+      box.style.display = 'block';
+    }
+  });
+}
+function jumpToPlace(i){
+  const box = document.getElementById('searchResults');
+  const p = box._placeMatches[i];
+  box.style.display = 'none';
+  document.getElementById('searchInput').value = '';
+  map.setLevel(3, {animate:true});
+  map.panTo(new kakao.maps.LatLng(parseFloat(p.y), parseFloat(p.x)));
 }
 
 /* ── 마커 렌더링(그리드 기반 클러스터링) ── */
@@ -270,8 +349,8 @@ function makeMarkerOverlay(center){
   el.innerHTML = `<div class="marker-bm" style="color:${color}">${center.bm||''}</div><div class="marker-name">${center.name}</div>`;
   const overlay = new kakao.maps.CustomOverlay({
     position: pos,
-    content: el,       // 카카오 CustomOverlay는 실제 DOM 엘리먼트를 그대로 넣을 수 있어서
-    xAnchor: 0, yAnchor: 0, // 기존 CSS(transform:translate(-50%,-100%))가 위치 보정을 그대로 담당하게 둔다
+    content: el,
+    xAnchor: 0, yAnchor: 0,
     zIndex: 10
   });
   overlay.setMap(map);
@@ -281,8 +360,6 @@ function makeClusterOverlay(lat, lng, count){
   const el = document.createElement('div');
   el.className = 'cluster-box';
   el.textContent = count;
-  // 카카오 CustomOverlay는 마커와 달리 이벤트를 지도 API에 직접 등록하지 못하므로,
-  // 안에 들어간 DOM 엘리먼트에 순수 JS 클릭 이벤트를 붙인다.
   el.addEventListener('click', ()=>{
     map.setLevel(Math.max(map.getLevel()-3, 1), {animate:true});
     map.panTo(new kakao.maps.LatLng(lat, lng));
@@ -290,7 +367,7 @@ function makeClusterOverlay(lat, lng, count){
   const overlay = new kakao.maps.CustomOverlay({
     position: new kakao.maps.LatLng(lat, lng),
     content: el,
-    xAnchor: 0, yAnchor: 0, // CSS(transform:translate(-50%,-50%))가 중앙 정렬을 담당
+    xAnchor: 0, yAnchor: 0,
     zIndex: 5
   });
   overlay.setMap(map);
@@ -300,32 +377,22 @@ function renderMarkers(){
   if(!map) return;
   clearOverlays();
   if(!visibleCenters.length) return;
-  // 카카오는 kakao.maps.load() 콜백 이후엔 SDK가 100% 준비된 상태라
-  // 네이버 버전에 있던 "실패하면 재시도" 안전장치가 더 이상 필요 없다(구조적으로 단순해짐).
   renderWithClustering();
 }
 function renderWithClustering(){
   const level = map.getLevel();
-  // 레벨이 충분히 낮으면(=많이 확대돼 있으면, 마커들이 서로 안 겹칠 정도) 클러스터링 없이 그대로 표시
   if(level <= 8){
     visibleCenters.forEach(c=>{ _renderedOverlays.push(makeMarkerOverlay(c)); });
     return;
   }
-
-  // 카카오 지도의 "레벨"(1~14, 작을수록 확대 — 네이버 zoom과 반대 방향)을
-  // 기존에 쓰던 zoom 기준 그리드 계산식에 맞추기 위해 근사 변환한다.
-  // 정확한 값은 아니고 어림값이므로, 실제 화면에서 클러스터 뭉치는 크기가
-  // 너무 크거나 작아 보이면 아래 21 이라는 숫자를 올리거나 내려서 눈으로 보며 조정하면 된다.
   const approxZoom = 21 - level;
   const cellSizeDeg = 84.375 / Math.pow(2, approxZoom);
   const buckets = {};
-
   visibleCenters.forEach(c=>{
     const key = Math.floor(c.lat/cellSizeDeg) + '_' + Math.floor(c.lng/cellSizeDeg);
     if(!buckets[key]) buckets[key] = [];
     buckets[key].push(c);
   });
-
   Object.values(buckets).forEach(group=>{
     if(group.length === 1){
       _renderedOverlays.push(makeMarkerOverlay(group[0]));
@@ -337,13 +404,91 @@ function renderWithClustering(){
   });
 }
 
+/* ── 거리·면적·반경 재기 (카카오 Drawing 라이브러리) ── */
+function initDrawingManager(){
+  drawingManager = new kakao.maps.drawing.DrawingManager({
+    map: map,
+    drawingMode: [
+      kakao.maps.drawing.OverlayType.POLYLINE,
+      kakao.maps.drawing.OverlayType.POLYGON,
+      kakao.maps.drawing.OverlayType.CIRCLE
+    ],
+    guideTooltip: ['draw','drag','edit'],
+    polylineOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', strokeWeight:3 },
+    polygonOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', fillColor:'#e11d48', fillOpacity:0.25 },
+    circleOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', fillColor:'#e11d48', fillOpacity:0.25 }
+  });
+  kakao.maps.event.addListener(drawingManager, 'drawend', function(data){
+    showMeasureResult(data.target);
+  });
+}
+function showMeasureResult(target){
+  const box = document.getElementById('measureResult');
+  let text = '';
+  if(typeof target.getRadius === 'function'){
+    const r = target.getRadius();
+    text = '반경: ' + (r < 1000 ? Math.round(r) + 'm' : (r/1000).toFixed(2) + 'km');
+  } else if(typeof target.getArea === 'function'){
+    const area = target.getArea();
+    text = '면적: ' + (area < 10000 ? Math.round(area).toLocaleString() + '㎡' : (area/10000).toFixed(2) + 'ha');
+  } else if(typeof target.getLength === 'function'){
+    const len = target.getLength();
+    text = '거리: ' + (len < 1000 ? Math.round(len) + 'm' : (len/1000).toFixed(2) + 'km');
+  }
+  if(text){
+    box.textContent = text;
+    box.style.display = 'block';
+  }
+}
+function selectMeasureTool(mode){
+  if(!drawingManager) initDrawingManager();
+  drawingManager.cancel();
+  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
+  if(currentDrawMode === mode){
+    currentDrawMode = null; // 같은 버튼을 다시 누르면 그리기 모드 끄기
+    return;
+  }
+  currentDrawMode = mode;
+  document.getElementById('tool-'+mode).classList.add('active');
+  const typeMap = {
+    distance: kakao.maps.drawing.OverlayType.POLYLINE,
+    area: kakao.maps.drawing.OverlayType.POLYGON,
+    radius: kakao.maps.drawing.OverlayType.CIRCLE
+  };
+  drawingManager.select(typeMap[mode]);
+}
+function clearMeasurements(){
+  if(drawingManager){
+    drawingManager.cancel();
+    const data = drawingManager.getOverlays();
+    Object.keys(data).forEach(type=>{
+      data[type].forEach(overlay => drawingManager.remove(overlay));
+    });
+  }
+  document.getElementById('measureResult').style.display = 'none';
+  currentDrawMode = null;
+  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
+}
+
+/* ── 지적편집도 보기 켜기/끄기 ── */
+function toggleCadastral(){
+  cadastralOn = !cadastralOn;
+  if(cadastralOn){
+    map.addOverlayMapTypeId(kakao.maps.MapTypeId.USE_DISTRICT);
+  } else {
+    map.removeOverlayMapTypeId(kakao.maps.MapTypeId.USE_DISTRICT);
+  }
+  document.getElementById('tool-cadastral').classList.toggle('active', cadastralOn);
+}
+
 async function init(){
   try{
-    showStatus('카카오 지도를 불러오는 중…');
-    map = await loadKakaoMapAndCreate();
+    showStatus('내 위치를 확인하는 중…');
+    const loc = await getUserLocation(6000); // 6초 안에 응답 없으면 포기하고 전체 화면으로 시작
 
-    // 진단 모드: 주소 끝에 ?nomarker 를 붙이면 마커 관련 코드를 전혀 실행하지 않고
-    // 지도(kakao.maps.Map)만 띄운다.
+    showStatus('카카오 지도를 불러오는 중…');
+    map = await loadKakaoMapAndCreate(loc);
+
     if(location.search.includes('nomarker')){
       showStatus('🔧 진단 모드 — 마커 없이 지도만 표시 중');
       document.getElementById('countLabel').textContent = '진단 모드(마커 미표시)';
