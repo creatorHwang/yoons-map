@@ -91,7 +91,7 @@
 /* ============================================================
    설정 — 이 두 값만 채우면 바로 작동합니다
    ============================================================ */
-const NAVER_CLIENT_ID = 'mzg4yqh4je'; // 네이버클라우드플랫폼 콘솔에서 발급받은 Client ID
+const NAVER_CLIENT_ID = '9r59x86ydf'; // 네이버클라우드플랫폼 콘솔에서 발급받은 Client ID (신규 'Maps' 단독 상품)
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwNhaDXFVqrJ6i9LMhz9mqj9vlQYVtSl0eOrlpbV_qXYLyA4fshBWZrc0KJnZUyCPs/exec';
 
 /* ============================================================ */
@@ -160,7 +160,7 @@ function loadNaverMapAndCreate(){
       })();
     };
     const s = document.createElement('script');
-    s.src = 'https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=' + encodeURIComponent(NAVER_CLIENT_ID) + '&callback=__onNaverMapReady';
+    s.src = 'https://oapi.map.naver.com/openapi/v3/maps.js?ncpClientId=' + encodeURIComponent(NAVER_CLIENT_ID) + '&callback=__onNaverMapReady';
     s.onerror = ()=>reject(new Error('네이버 지도 스크립트를 불러오지 못했습니다.'));
     document.head.appendChild(s);
   });
