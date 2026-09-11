@@ -77,6 +77,7 @@
   .tool-btn:hover{background:var(--pine-soft)}
   .tool-btn.active{background:var(--pine);color:#fff;border-color:var(--pine)}
   .measure-result{font-size:12px;font-weight:800;color:var(--pine-dark);padding:2px 2px 4px;display:none}
+  .measure-hint{font-size:10.5px;color:var(--muted);padding:0 2px 4px;display:none}
 </style>
 </head>
 <body>
@@ -97,6 +98,7 @@
     <div class="legend" id="legend" style="display:none"></div>
     <div class="tool-panel">
       <div id="measureResult" class="measure-result"></div>
+      <div id="measureHint" class="measure-hint">Esc 키로 취소</div>
       <button class="tool-btn" id="tool-distance" onclick="selectMeasureTool('distance')">📏 거리재기</button>
       <button class="tool-btn" id="tool-area" onclick="selectMeasureTool('area')">📐 면적재기</button>
       <button class="tool-btn" id="tool-radius" onclick="selectMeasureTool('radius')">⭕ 반경재기</button>
@@ -131,9 +133,7 @@ let visibleCenters = [];   // BM 필터 적용된 목록
 let _bmActive = null;      // null = 전체, 문자열 = 그 BM만
 let _renderedOverlays = [];
 let placesService = null;  // 카카오 장소 검색(주소/아파트/학교 등) 서비스 객체
-let drawingManager = null; // 거리·면적·반경 재기를 담당하는 Drawing 라이브러리 객체
-let currentDrawMode = null;
-let cadastralOn = false;
+let searchMarker = null;   // 검색해서 이동한 위치에 찍어주는 마커(검색할 때마다 이전 것은 지우고 새로 찍음)
 
 function showStatus(msg, isError){
   let el = document.getElementById('statusBanner');
@@ -164,9 +164,7 @@ function getUserLocation(timeoutMs){
 }
 
 /* ── 카카오 지도 SDK 로딩 ──
-   autoload=false 로 불러온 뒤 kakao.maps.load(콜백)을 쓰면,
-   콜백이 실행되는 시점엔 kakao.maps 하위 객체가 전부 100% 준비돼 있는 게 보장된다.
-   services(장소검색), drawing(거리·면적·반경 재기) 라이브러리를 함께 불러온다.
+   services(장소검색), drawing(면적재기) 라이브러리를 함께 불러온다.
 */
 function loadKakaoMapAndCreate(startLoc){
   return new Promise((resolve, reject)=>{
@@ -263,6 +261,16 @@ function applyFilterAndRender(){
   renderMarkers();
 }
 
+/* ── 검색 결과 위치에 마커 찍기 ── (검색할 때마다 이전 마커는 지우고 새로 찍는다) */
+function placeSearchMarker(lat, lng){
+  if(searchMarker) searchMarker.setMap(null);
+  searchMarker = new kakao.maps.Marker({
+    position: new kakao.maps.LatLng(lat, lng),
+    map: map,
+    zIndex: 20
+  });
+}
+
 /* ── 검색 ──
    1) 입력할 때마다: 우리 센터 목록(무료, 즉시)만 빠르게 보여준다.
    2) "찾기"를 누르거나 Enter를 치면: 카카오 장소 검색(주소/아파트/학교 등)을 추가로 불러와 아래에 덧붙인다.
@@ -302,6 +310,7 @@ function jumpTo(i){
   document.getElementById('searchInput').value='';
   map.setLevel(3, {animate:true});
   map.panTo(new kakao.maps.LatLng(c.lat, c.lng));
+  placeSearchMarker(c.lat, c.lng);
 }
 
 function ensurePlacesService(){
@@ -319,7 +328,6 @@ function searchPlacesAndAppend(keyword){
       `<div class="search-item" onclick="jumpToPlace(${i})"><b>📍 ${p.place_name}</b><span>${p.road_address_name || p.address_name || ''}</span></div>`
     ).join('');
     if(placesHtml){
-      // "일치하는 센터가 없습니다" 안내문이 떠 있었다면 지우고 장소 결과로 교체
       if(!box._matches || !box._matches.length){ box.innerHTML = ''; }
       box.innerHTML += `<div class="search-divider">주변 장소(주소·아파트·학교 등)</div>` + placesHtml;
       box.style.display = 'block';
@@ -331,8 +339,10 @@ function jumpToPlace(i){
   const p = box._placeMatches[i];
   box.style.display = 'none';
   document.getElementById('searchInput').value = '';
+  const lat = parseFloat(p.y), lng = parseFloat(p.x);
   map.setLevel(3, {animate:true});
-  map.panTo(new kakao.maps.LatLng(parseFloat(p.y), parseFloat(p.x)));
+  map.panTo(new kakao.maps.LatLng(lat, lng));
+  placeSearchMarker(lat, lng);
 }
 
 /* ── 마커 렌더링(그리드 기반 클러스터링) ── */
@@ -404,60 +414,180 @@ function renderWithClustering(){
   });
 }
 
-/* ── 거리·면적·반경 재기 (카카오 Drawing 라이브러리) ── */
+/* ── 거리·면적·반경 재기 ──
+   - 거리재기: A, B 두 번 클릭하면 바로 끝나고 거리 표시 (직접 구현)
+   - 반경재기: 중심 클릭 → 반지름 지점 클릭, 두 번 클릭하면 바로 끝나고 반경 표시 (직접 구현)
+   - 면적재기: 여러 점을 찍어 다각형을 그려야 하므로(2번 클릭으로 끝낼 수 없음) 카카오 기본 Drawing 라이브러리 사용
+   - 셋 다 그리는 중 Esc 키를 누르면 취소된다.
+*/
+let drawingManager = null;      // 면적재기(다각형) 전용
+let currentTool = null;         // 'distance' | 'area' | 'radius' | null
+let _customCleanup = null;      // 거리재기/반경재기 중 Esc·전환 시 정리할 함수
+let _customOverlays = [];       // 거리재기/반경재기로 그려진 최종 도형들(지우기 버튼 대상)
+let cadastralOn = false;
+
+function formatDistance(m){
+  return m < 1000 ? Math.round(m) + 'm' : (m/1000).toFixed(2) + 'km';
+}
+function formatArea(m2){
+  return m2 < 10000 ? Math.round(m2).toLocaleString() + '㎡' : (m2/10000).toFixed(2) + 'ha';
+}
+// 두 좌표 사이의 실제 거리(m)를 하버사인 공식으로 계산 (지도 라이브러리 도움 없이 즉시 계산)
+function distanceMeters(a, b){
+  const R = 6371008.8;
+  const toRad = d => d * Math.PI/180;
+  const lat1 = toRad(a.getLat()), lat2 = toRad(b.getLat());
+  const dLat = toRad(b.getLat()-a.getLat());
+  const dLng = toRad(b.getLng()-a.getLng());
+  const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+
+function showMeasureText(text){
+  const box = document.getElementById('measureResult');
+  box.textContent = text;
+  box.style.display = 'block';
+}
+function showMeasureHint(show){
+  document.getElementById('measureHint').style.display = show ? 'block' : 'none';
+}
+function setActiveToolButton(mode){
+  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
+  if(mode) document.getElementById('tool-'+mode).classList.add('active');
+}
+
+// 진행 중이던 거리재기/반경재기를 정리(임시 도형 제거, 이벤트 리스너 해제)
+function cleanupCustomTool(){
+  if(_customCleanup){ _customCleanup(); _customCleanup = null; }
+  showMeasureHint(false);
+}
+
+function startDistanceMeasure(){
+  cleanupCustomTool();
+  showMeasureHint(true);
+  let p1 = null;
+  let moveLine = null;
+
+  function onClick(e){
+    if(!p1){
+      p1 = e.latLng;
+      moveLine = new kakao.maps.Polyline({
+        map: map, path: [p1, p1],
+        strokeColor:'#e11d48', strokeWeight:3, strokeOpacity:0.85, strokeStyle:'shortdash'
+      });
+      kakao.maps.event.addListener(map, 'mousemove', onMove);
+    } else {
+      finish(e.latLng);
+    }
+  }
+  function onMove(e){
+    if(moveLine) moveLine.setPath([p1, e.latLng]);
+  }
+  function finish(p2){
+    kakao.maps.event.removeListener(map, 'click', onClick);
+    kakao.maps.event.removeListener(map, 'mousemove', onMove);
+    if(moveLine) moveLine.setMap(null);
+    const finalLine = new kakao.maps.Polyline({
+      map: map, path: [p1, p2],
+      strokeColor:'#e11d48', strokeWeight:3
+    });
+    _customOverlays.push(finalLine);
+    showMeasureText('거리: ' + formatDistance(finalLine.getLength()));
+    showMeasureHint(false);
+    currentTool = null;
+    setActiveToolButton(null);
+  }
+  kakao.maps.event.addListener(map, 'click', onClick);
+  _customCleanup = function(){
+    kakao.maps.event.removeListener(map, 'click', onClick);
+    kakao.maps.event.removeListener(map, 'mousemove', onMove);
+    if(moveLine) moveLine.setMap(null);
+  };
+}
+
+function startRadiusMeasure(){
+  cleanupCustomTool();
+  showMeasureHint(true);
+  let center = null;
+  let moveCircle = null;
+
+  function onClick(e){
+    if(!center){
+      center = e.latLng;
+      moveCircle = new kakao.maps.Circle({
+        map: map, center: center, radius: 1,
+        strokeColor:'#e11d48', strokeWeight:3, strokeOpacity:0.85,
+        fillColor:'#e11d48', fillOpacity:0.2
+      });
+      kakao.maps.event.addListener(map, 'mousemove', onMove);
+    } else {
+      finish(e.latLng);
+    }
+  }
+  function onMove(e){
+    if(moveCircle) moveCircle.setRadius(distanceMeters(center, e.latLng));
+  }
+  function finish(edge){
+    kakao.maps.event.removeListener(map, 'click', onClick);
+    kakao.maps.event.removeListener(map, 'mousemove', onMove);
+    const r = distanceMeters(center, edge);
+    moveCircle.setRadius(r);
+    _customOverlays.push(moveCircle);
+    showMeasureText('반경: ' + formatDistance(r));
+    showMeasureHint(false);
+    currentTool = null;
+    setActiveToolButton(null);
+  }
+  kakao.maps.event.addListener(map, 'click', onClick);
+  _customCleanup = function(){
+    kakao.maps.event.removeListener(map, 'click', onClick);
+    kakao.maps.event.removeListener(map, 'mousemove', onMove);
+    if(moveCircle) moveCircle.setMap(null);
+  };
+}
+
 function initDrawingManager(){
   drawingManager = new kakao.maps.drawing.DrawingManager({
     map: map,
-    drawingMode: [
-      kakao.maps.drawing.OverlayType.POLYLINE,
-      kakao.maps.drawing.OverlayType.POLYGON,
-      kakao.maps.drawing.OverlayType.CIRCLE
-    ],
+    drawingMode: [ kakao.maps.drawing.OverlayType.POLYGON ],
     guideTooltip: ['draw','drag','edit'],
-    polylineOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', strokeWeight:3 },
-    polygonOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', fillColor:'#e11d48', fillOpacity:0.25 },
-    circleOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', fillColor:'#e11d48', fillOpacity:0.25 }
+    polygonOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', fillColor:'#e11d48', fillOpacity:0.25 }
   });
   kakao.maps.event.addListener(drawingManager, 'drawend', function(data){
-    showMeasureResult(data.target);
+    showMeasureText('면적: ' + formatArea(data.target.getArea()));
+    currentTool = null;
+    setActiveToolButton(null);
   });
 }
-function showMeasureResult(target){
-  const box = document.getElementById('measureResult');
-  let text = '';
-  if(typeof target.getRadius === 'function'){
-    const r = target.getRadius();
-    text = '반경: ' + (r < 1000 ? Math.round(r) + 'm' : (r/1000).toFixed(2) + 'km');
-  } else if(typeof target.getArea === 'function'){
-    const area = target.getArea();
-    text = '면적: ' + (area < 10000 ? Math.round(area).toLocaleString() + '㎡' : (area/10000).toFixed(2) + 'ha');
-  } else if(typeof target.getLength === 'function'){
-    const len = target.getLength();
-    text = '거리: ' + (len < 1000 ? Math.round(len) + 'm' : (len/1000).toFixed(2) + 'km');
-  }
-  if(text){
-    box.textContent = text;
-    box.style.display = 'block';
-  }
-}
+
 function selectMeasureTool(mode){
-  if(!drawingManager) initDrawingManager();
-  drawingManager.cancel();
-  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
-  if(currentDrawMode === mode){
-    currentDrawMode = null; // 같은 버튼을 다시 누르면 그리기 모드 끄기
-    return;
+  cleanupCustomTool();
+  if(drawingManager) drawingManager.cancel();
+
+  if(currentTool === mode){
+    currentTool = null;
+    setActiveToolButton(null);
+    return; // 같은 버튼을 다시 누르면 끄기
   }
-  currentDrawMode = mode;
-  document.getElementById('tool-'+mode).classList.add('active');
-  const typeMap = {
-    distance: kakao.maps.drawing.OverlayType.POLYLINE,
-    area: kakao.maps.drawing.OverlayType.POLYGON,
-    radius: kakao.maps.drawing.OverlayType.CIRCLE
-  };
-  drawingManager.select(typeMap[mode]);
+  currentTool = mode;
+  setActiveToolButton(mode);
+  document.getElementById('measureResult').style.display = 'none';
+
+  if(mode === 'distance'){
+    startDistanceMeasure();
+  } else if(mode === 'radius'){
+    startRadiusMeasure();
+  } else if(mode === 'area'){
+    if(!drawingManager) initDrawingManager();
+    showMeasureHint(true);
+    drawingManager.select(kakao.maps.drawing.OverlayType.POLYGON);
+  }
 }
+
 function clearMeasurements(){
+  cleanupCustomTool();
+  _customOverlays.forEach(o=>o.setMap(null));
+  _customOverlays = [];
   if(drawingManager){
     drawingManager.cancel();
     const data = drawingManager.getOverlays();
@@ -466,9 +596,18 @@ function clearMeasurements(){
     });
   }
   document.getElementById('measureResult').style.display = 'none';
-  currentDrawMode = null;
-  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
+  currentTool = null;
+  setActiveToolButton(null);
 }
+
+// Esc 키로 진행 중인 거리재기/면적재기/반경재기를 취소한다
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  cleanupCustomTool();
+  if(drawingManager) drawingManager.cancel();
+  currentTool = null;
+  setActiveToolButton(null);
+});
 
 /* ── 지적편집도 보기 켜기/끄기 ── */
 function toggleCadastral(){
