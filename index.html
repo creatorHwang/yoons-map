@@ -316,18 +316,14 @@ function renderWithClustering(){
     return true;
   }
 
-  // 격자 기반 클러스터링: 줌이 낮을수록 격자 칸을 크게
-  const bounds = map.getBounds();
-  const proj = map.getProjection();
-  if(!bounds || !proj) throw new Error('지도 초기화 대기 중');
-  const cellPx = 60; // 화면 픽셀 기준 격자 크기
+  // 위도·경도 좌표만으로 격자를 나누는 클러스터링(getBounds/getProjection 불필요 —
+  // 이 두 함수가 이 환경에서 초기화 타이밍 문제를 자주 일으켜서 아예 의존하지 않도록 함).
+  // 웹 지도 타일 규격상 "화면 60px"에 해당하는 경도 폭을 줌 레벨로 근사 계산.
+  const cellSizeDeg = 84.375 / Math.pow(2, zoom);
   const buckets = {};
 
   visibleCenters.forEach(c=>{
-    const latlng = new naver.maps.LatLng(c.lat, c.lng);
-    if(!bounds.hasLatLng(latlng)) return; // 화면 밖이면 스킵(성능)
-    const pt = proj.fromCoordToOffset(latlng);
-    const key = Math.floor(pt.x/cellPx) + '_' + Math.floor(pt.y/cellPx);
+    const key = Math.floor(c.lat/cellSizeDeg) + '_' + Math.floor(c.lng/cellSizeDeg);
     if(!buckets[key]) buckets[key] = [];
     buckets[key].push(c);
   });
