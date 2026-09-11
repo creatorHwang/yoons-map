@@ -234,10 +234,10 @@ function onSearchInput(v){
   const q = v.trim().toLowerCase();
   if(!q){ box.style.display='none'; box.innerHTML=''; return; }
   const matches = allCenters.filter(c=>(c.address||'').toLowerCase().includes(q)).slice(0,15);
-  if(!matches.length){ box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 주소가 없습니다.</div>'; box.style.display=''; return; }
+  if(!matches.length){ box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 주소가 없습니다.</div>'; box.style.display='block'; return; }
   box.innerHTML = matches.map((c,i)=>`<div class="search-item" onclick="jumpTo(${i})"><b>${c.name}</b><span>${c.address||''}</span></div>`).join('');
   box._matches = matches;
-  box.style.display = '';
+  box.style.display = 'block';
 }
 function onSearchSubmit(){
   const v = document.getElementById('searchInput').value;
