@@ -225,10 +225,23 @@ function fetchCentersViaJsonp(){
   });
 }
 async function fetchCenters(){
+  // 짧은 시간 안에 새로고침을 여러 번 하는 경우를 대비해, 최근 받아온 데이터를 5분간 브라우저에 캐싱해둔다.
+  // 캐시가 있으면 구글 시트에 다시 요청하지 않고 바로 써서 로딩이 즉시 끝난다.
+  const CACHE_KEY = 'yoonsmap_centers_cache_v1';
+  const CACHE_TTL_MS = 5 * 60 * 1000; // 5분 — 필요하면 이 숫자만 바꾸면 됨
+  try{
+    const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+    if(cached && Array.isArray(cached.centers) && (Date.now() - cached.ts) < CACHE_TTL_MS){
+      return cached.centers;
+    }
+  }catch(e){ /* 캐시가 깨졌으면 무시하고 새로 받아온다 */ }
+
   let lastErr = null;
   for(let attempt=1; attempt<=2; attempt++){ // 첫 시도 실패해도 한 번 더 시도(일시적 네트워크 문제 대비)
     try{
-      return await fetchCentersViaJsonp();
+      const centers = await fetchCentersViaJsonp();
+      try{ localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), centers })); }catch(e){}
+      return centers;
     }catch(e){
       lastErr = e;
       if(attempt < 2) await new Promise(r=>setTimeout(r, 500));
@@ -388,18 +401,23 @@ function renderMarkers(){
   if(!map) return;
   clearOverlays();
   if(!visibleCenters.length) return;
-  renderWithClustering();
+  // 화면에 실제로 보이는 범위(bounds) 안의 센터만 추려서 그린다.
+  // 예전에는 929개 전체를 매번 다시 그려서 패닝·줌마다 버벅였는데,
+  // 화면 밖 센터는 그릴 필요가 없으므로 이렇게 걸러내면 훨씬 가벼워진다.
+  const bounds = map.getBounds();
+  const onScreen = visibleCenters.filter(c => bounds.contain(new kakao.maps.LatLng(c.lat, c.lng)));
+  renderWithClustering(onScreen);
 }
-function renderWithClustering(){
+function renderWithClustering(centers){
   const level = map.getLevel();
   if(level <= 8){
-    visibleCenters.forEach(c=>{ _renderedOverlays.push(makeMarkerOverlay(c)); });
+    centers.forEach(c=>{ _renderedOverlays.push(makeMarkerOverlay(c)); });
     return;
   }
   const approxZoom = 21 - level;
   const cellSizeDeg = 84.375 / Math.pow(2, approxZoom);
   const buckets = {};
-  visibleCenters.forEach(c=>{
+  centers.forEach(c=>{
     const key = Math.floor(c.lat/cellSizeDeg) + '_' + Math.floor(c.lng/cellSizeDeg);
     if(!buckets[key]) buckets[key] = [];
     buckets[key].push(c);
