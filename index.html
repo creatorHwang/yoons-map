@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>가맹지역본부 지도 — 윤선생</title>
+<title>YOONS MAPs — 윤선생</title>
 <style>
   :root{
     --pine:#2f5d50; --pine-dark:#1c3d34; --pine-soft:#e6efe9;
@@ -85,7 +85,7 @@
 <body>
 <div id="app">
   <header>
-    <h1>📍 가맹지역본부 지도</h1>
+    <h1>📍 YOONS MAPs</h1>
     <span class="count" id="countLabel">불러오는 중…</span>
     <div class="search-box">
       <input type="text" id="searchInput" placeholder="🔍 센터명·주소·아파트·학교 등으로 찾기" oninput="onSearchInput(this.value)"
@@ -102,8 +102,8 @@
       <div id="measureResult" class="measure-result"></div>
       <div id="measureHint" class="measure-hint">Esc 키로 취소</div>
       <button class="tool-btn" id="tool-distance" onclick="selectMeasureTool('distance')">📏 거리재기</button>
-      <button class="tool-btn" id="tool-area" onclick="selectMeasureTool('area')">📐 면적재기</button>
-      <button class="tool-btn" id="tool-radius" onclick="selectMeasureTool('radius')">⭕ 반경재기</button>
+      <button class="tool-btn" id="tool-area" onclick="selectMeasureTool('area')">📐 영업구역 그리기(다각형)</button>
+      <button class="tool-btn" id="tool-radius" onclick="selectMeasureTool('radius')">⭕ 반경 그리기</button>
       <button class="tool-btn" id="tool-clear" onclick="clearMeasurements()">🗑️ 그린 것 지우기</button>
       <button class="tool-btn" id="tool-cadastral" onclick="toggleCadastral()">🗺️ 지적편집도</button>
     </div>
@@ -127,6 +127,20 @@ const DEFAULT_COLOR = '#4b5563';
 function bmColor(bm){
   for(const k in BM_COLORS){ if(bm && bm.includes(k)) return BM_COLORS[k]; }
   return DEFAULT_COLOR;
+}
+// 필터 칩·범례 노출 순서 고정(이 목록에 없는 BM은 뒤에 가나다순으로 붙는다)
+const BM_ORDER = ['IGSE', '영어숲', '교습소', '공부방', '학원(상가형)'];
+function bmSortCompare(a, b){
+  const ia = BM_ORDER.indexOf(a), ib = BM_ORDER.indexOf(b);
+  if(ia === -1 && ib === -1) return a.localeCompare(b);
+  if(ia === -1) return 1;
+  if(ib === -1) return -1;
+  return ia - ib;
+}
+// 화면에 보여줄 이름만 바꾸고(싶은 부분), 실제 필터링·데이터 매칭은 원래 값(raw)을 그대로 쓴다.
+const BM_DISPLAY_OVERRIDES = { '학원(상가형)': '우영(상가형)' };
+function bmDisplayLabel(bm){
+  return BM_DISPLAY_OVERRIDES[bm] || bm || '';
 }
 
 let map = null;
@@ -251,18 +265,18 @@ async function fetchCenters(){
 }
 
 function buildBmFilters(){
-  const bms = Array.from(new Set(allCenters.map(c=>c.bm).filter(Boolean))).sort();
+  const bms = Array.from(new Set(allCenters.map(c=>c.bm).filter(Boolean))).sort(bmSortCompare);
   const wrap = document.getElementById('bmFilters');
   const allChip = `<div class="bm-chip ${_bmActive===null?'active':''}" style="${_bmActive===null?`background:${'var(--pine)'}`:''}" onclick="setBmFilter(null)">전체</div>`;
   const chips = bms.map(bm=>{
     const active = _bmActive===bm;
     const color = bmColor(bm);
-    return `<div class="bm-chip ${active?'active':''}" style="${active?`background:${color}`:''}" onclick="setBmFilter('${bm.replace(/'/g,"\\'")}')">${bm}</div>`;
+    return `<div class="bm-chip ${active?'active':''}" style="${active?`background:${color}`:''}" onclick="setBmFilter('${bm.replace(/'/g,"\\'")}')">${bmDisplayLabel(bm)}</div>`;
   }).join('');
   wrap.innerHTML = allChip + chips;
 
   const legend = document.getElementById('legend');
-  legend.innerHTML = bms.map(bm=>`<div><span class="dot" style="background:${bmColor(bm)}"></span>${bm}</div>`).join('');
+  legend.innerHTML = bms.map(bm=>`<div><span class="dot" style="background:${bmColor(bm)}"></span>${bmDisplayLabel(bm)}</div>`).join('');
   legend.style.display = bms.length ? '' : 'none';
 }
 function setBmFilter(bm){
@@ -371,7 +385,7 @@ function makeMarkerOverlay(center){
   const el = document.createElement('div');
   el.className = 'marker-box';
   el.style.borderColor = color;
-  el.innerHTML = `<div class="marker-bm" style="color:${color}">${center.bm||''}</div><div class="marker-name">${center.name}</div>`;
+  el.innerHTML = `<div class="marker-bm" style="color:${color}">${bmDisplayLabel(center.bm)}</div><div class="marker-name">${center.name}</div>`;
   const overlay = new kakao.maps.CustomOverlay({
     position: pos,
     content: el,
