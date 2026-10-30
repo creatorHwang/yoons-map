@@ -80,6 +80,13 @@
   .measure-hint{font-size:10.5px;color:var(--muted);padding:0 2px 4px;display:none}
   .measure-label{background:#1c2431;color:#fff;font-size:11.5px;font-weight:800;padding:3px 9px;
     border-radius:6px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25);transform:translate(10px,-8px)}
+
+  .terr-box{display:none;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;font-size:12px;line-height:1.5;max-width:230px}
+  .terr-box b{color:var(--pine)}
+  .terr-box .row{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+  .terr-box input[type=number]{width:80px;padding:4px;border:1px solid var(--line);border-radius:4px;font-size:12px}
+  .tool-btn.danger{color:#b91c1c}
+  .tool-btn.hidden{display:none}
 </style>
 </head>
 <body>
@@ -106,6 +113,10 @@
       <button class="tool-btn" id="tool-radius" onclick="selectMeasureTool('radius')">⭕ 반경 그리기</button>
       <button class="tool-btn" id="tool-clear" onclick="clearMeasurements()">🗑️ 그린 것 지우기</button>
       <button class="tool-btn" id="tool-cadastral" onclick="toggleCadastral()">🗺️ 지적편집도</button>
+      <button class="tool-btn hidden" id="tool-terr" onclick="toggleTerritoryView()">🧭 영업구역 보기</button>
+      <button class="tool-btn" id="tool-unlock" onclick="unlockByPrompt()">🔑 편집 잠금해제</button>
+      <button class="tool-btn hidden" id="tool-edit" onclick="toggleEditMode()">✏️ 영업구역 편집</button>
+      <div class="terr-box" id="terrBox"></div>
     </div>
   </div>
 </div>
@@ -117,6 +128,8 @@
 const KAKAO_APP_KEY = 'c8c20c9263006ba1a272f260b050fb96'; // 카카오 개발자 콘솔 > 내 애플리케이션 > 앱 키 > JavaScript 키
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwNhaDXFVqrJ6i9LMhz9mqj9vlQYVtSl0eOrlpbV_qXYLyA4fshBWZrc0KJnZUyCPs/exec';
 
+// 통합 캔버스에서 키를 받아도 되는 주소(이 주소에서 온 메시지만 믿는다)
+const PARENT_ORIGINS = ['https://dashboard.ican1202.workers.dev'];
 /* ============================================================ */
 
 const BM_COLORS = {
@@ -386,6 +399,8 @@ function makeMarkerOverlay(center){
   el.className = 'marker-box';
   el.style.borderColor = color;
   el.innerHTML = `<div class="marker-bm" style="color:${color}">${bmDisplayLabel(center.bm)}</div><div class="marker-name">${center.name}</div>`;
+  el.addEventListener('click', ()=>{ if(editMode) selectCenterForEdit(center); });
+  if(editMode) el.style.cursor='pointer';
   const overlay = new kakao.maps.CustomOverlay({
     position: pos,
     content: el,
@@ -619,6 +634,7 @@ function initDrawingManager(){
     polygonOptions: { draggable:true, removable:true, editable:true, strokeColor:'#e11d48', fillColor:'#e11d48', fillOpacity:0.25 }
   });
   kakao.maps.event.addListener(drawingManager, 'drawend', function(data){
+    if(terrDrawing === 'polygon'){ onTerrPolygonDrawn(data.target); return; }
     showMeasureText('면적: ' + formatArea(data.target.getArea()));
     currentTool = null;
     setActiveToolButton(null);
@@ -685,6 +701,239 @@ function toggleCadastral(){
   document.getElementById('tool-cadastral').classList.toggle('active', cadastralOn);
 }
 
+
+/* ============================================================
+   영업구역 저장·표시·편집
+   - 키(API_KEY)가 있어야만 읽기/쓰기 가능 → 키 없는 일반 지도에는 영업구역이 보이지 않는다
+   - 키 받는 방법  C) 통합 캔버스가 postMessage로 자동 전달   A) 🔑 버튼으로 직접 입력
+   - 센터 1개당 도형 1개(다각형 또는 반경원). 수정은 "다시 그리기 → 저장"(같은 센터는 덮어쓰기)
+   ============================================================ */
+let API_KEY = '';
+let territories = {};          // code -> {code,name,type,geo}
+let terrShown = false;         // 영업구역 보기 켜짐
+let editMode = false;
+let selCenter = null;          // 편집 중 선택된 센터
+let terrDrawing = null;        // 'polygon' | 'circle' | null
+let draft = null;              // {type, shape(kakao 객체)}
+let terrOverlays = {};         // code -> kakao 도형 (화면에 그려진 것)
+const TERR_MAX_LEVEL = 7;      // 이 레벨보다 멀리 축소하면 영업구역은 숨긴다(성능)
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ── 서버 호출 ── */
+function jsonpCall(params){
+  return new Promise((resolve, reject)=>{
+    const cb = '__tcb' + Date.now() + Math.floor(Math.random()*10000);
+    const sc = document.createElement('script');
+    const t = setTimeout(()=>{ delete window[cb]; sc.remove(); reject(new Error('서버 응답 지연')); }, 15000);
+    window[cb] = function(d){ clearTimeout(t); delete window[cb]; sc.remove(); d && d.ok ? resolve(d) : reject(new Error((d&&d.error)||'요청 실패')); };
+    sc.onerror = ()=>{ clearTimeout(t); delete window[cb]; sc.remove(); reject(new Error('서버에 연결할 수 없습니다')); };
+    const q = Object.keys(params).map(k=>k+'='+encodeURIComponent(params[k])).join('&');
+    sc.src = APPS_SCRIPT_URL + '?' + q + '&callback=' + cb + '&_=' + Date.now();
+    document.head.appendChild(sc);
+  });
+}
+async function postCall(payload){
+  const res = await fetch(APPS_SCRIPT_URL, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify(Object.assign({apiKey: API_KEY}, payload)) });
+  const d = await res.json();
+  if(!d.ok) throw new Error(d.error || '저장 실패');
+  return d;
+}
+
+/* ── 키 받기 (C: 캔버스 자동 / A: 직접 입력) ── */
+function initAuth(){
+  window.addEventListener('message', function(e){
+    if(PARENT_ORIGINS.indexOf(e.origin) < 0) return;           // 모르는 주소가 보낸 건 무시
+    const d = e.data;
+    if(d && d.type === 'yoonsmap-auth' && typeof d.apiKey === 'string') tryKey(d.apiKey, true);
+  });
+  if(window.parent !== window) window.parent.postMessage({type:'yoonsmap-ready'}, '*'); // 키 없이 "준비됐다"만 알림
+  let saved = '';
+  try{ saved = sessionStorage.getItem('yoonsmap_key') || ''; }catch(e){}
+  if(saved) tryKey(saved, true);
+  if(location.search.indexOf('edit=1') >= 0 && !saved) setTimeout(unlockByPrompt, 600);
+}
+async function tryKey(k, silent){
+  try{
+    API_KEY = k;
+    const d = await jsonpCall({action:'getTerritories', apiKey:k});
+    territories = {}; (d.territories||[]).forEach(t=>{ territories[t.code] = t; });
+    try{ sessionStorage.setItem('yoonsmap_key', k); }catch(e){}
+    document.getElementById('tool-unlock').classList.add('hidden');
+    document.getElementById('tool-terr').classList.remove('hidden');
+    document.getElementById('tool-edit').classList.remove('hidden');
+    renderTerritories();
+    return true;
+  }catch(e){
+    API_KEY = '';
+    if(!silent) alert('키가 맞지 않습니다. 다시 확인해 주세요.');
+    return false;
+  }
+}
+function unlockByPrompt(){
+  const k = prompt('편집용 API 키를 입력하세요 (통합 캔버스 안에서는 자동으로 입력됩니다)');
+  if(k) tryKey(k.trim(), false);
+}
+
+/* ── 영업구역 그리기(화면 표시) ── */
+function terrColorOf(code){
+  const c = allCenters.find(x=>x.code===code);
+  return c ? bmColor(c.bm) : DEFAULT_COLOR;
+}
+function makeShape(t, highlight){
+  const color = terrColorOf(t.code);
+  const opt = { strokeColor:color, strokeWeight: highlight?4:2, strokeOpacity:0.9, fillColor:color, fillOpacity: highlight?0.3:0.15, zIndex:1 };
+  if(t.type === 'circle'){
+    return new kakao.maps.Circle(Object.assign({center:new kakao.maps.LatLng(t.geo.lat,t.geo.lng), radius:t.geo.r}, opt));
+  }
+  return new kakao.maps.Polygon(Object.assign({path:t.geo.path.map(p=>new kakao.maps.LatLng(p[0],p[1]))}, opt));
+}
+function terrInBounds(t, b){
+  if(t.type === 'circle') return b.contain(new kakao.maps.LatLng(t.geo.lat, t.geo.lng));
+  return t.geo.path.some(p=>b.contain(new kakao.maps.LatLng(p[0],p[1])));
+}
+function renderTerritories(){
+  if(!map) return;
+  const hide = !terrShown || !API_KEY || map.getLevel() > TERR_MAX_LEVEL;
+  const want = {};
+  if(!hide){
+    const b = map.getBounds();
+    Object.keys(territories).forEach(code=>{
+      if(draft && selCenter && selCenter.code === code) return;   // 편집 중인 센터의 옛 도형은 숨김(초안이 대신 보임)
+      const t = territories[code];
+      if(terrInBounds(t, b)) want[code] = true;
+    });
+  }
+  Object.keys(terrOverlays).forEach(code=>{                       // 화면에서 사라진 것만 제거
+    if(!want[code]){ terrOverlays[code].setMap(null); delete terrOverlays[code]; }
+  });
+  Object.keys(want).forEach(code=>{                                // 새로 필요한 것만 추가
+    if(terrOverlays[code]) return;
+    const sh = makeShape(territories[code], selCenter && selCenter.code === code);
+    sh.setMap(map); terrOverlays[code] = sh;
+  });
+  const tb = document.getElementById('tool-terr');
+  if(terrShown && map.getLevel() > TERR_MAX_LEVEL) tb.textContent = '🧭 영업구역 (더 확대하면 보임)';
+  else tb.textContent = '🧭 영업구역 보기';
+}
+function resetTerrOverlays(){
+  Object.keys(terrOverlays).forEach(c=>terrOverlays[c].setMap(null)); terrOverlays = {};
+  renderTerritories();
+}
+function toggleTerritoryView(){
+  terrShown = !terrShown;
+  document.getElementById('tool-terr').classList.toggle('active', terrShown);
+  if(terrShown && map.getLevel() > TERR_MAX_LEVEL) map.setLevel(TERR_MAX_LEVEL);
+  renderTerritories();
+}
+
+/* ── 편집 모드 ── */
+function toggleEditMode(){
+  editMode = !editMode;
+  document.getElementById('tool-edit').classList.toggle('active', editMode);
+  if(editMode){
+    terrShown = true; document.getElementById('tool-terr').classList.add('active');
+    if(map.getLevel() > TERR_MAX_LEVEL) map.setLevel(TERR_MAX_LEVEL);
+  } else { cancelDraft(); selCenter = null; }
+  renderTerrBox(); renderMarkers(); resetTerrOverlays();
+}
+function selectCenterForEdit(c){
+  cancelDraft();
+  selCenter = c;
+  renderTerrBox(); resetTerrOverlays();
+}
+function renderTerrBox(){
+  const box = document.getElementById('terrBox');
+  if(!editMode){ box.style.display='none'; return; }
+  box.style.display='block';
+  if(!selCenter){ box.innerHTML = '<b>편집 모드</b><br>지도에서 <b>센터 마커</b>를 클릭해 선택하세요.'; return; }
+  const has = !!territories[selCenter.code];
+  box.innerHTML =
+    '<b>'+esc(selCenter.name)+'</b> ('+esc(selCenter.code)+')<br>'+
+    (has ? '저장된 영업구역: '+(territories[selCenter.code].type==='circle'?'반경원':'다각형') : '저장된 영업구역 없음')+
+    (has ? '<br><span style="color:#92400e">다시 그린 뒤 저장하면 덮어씁니다</span>' : '')+
+    '<div class="row"><button class="tool-btn" onclick="startTerrPolygon()">📐 다각형</button>'+
+    '<button class="tool-btn" onclick="startTerrCircle()">⭕ 반경원</button></div>'+
+    '<div id="terrDraftInfo"></div>'+
+    '<div class="row"><button class="tool-btn" id="terrSaveBtn" onclick="saveDraft()" disabled>💾 저장</button>'+
+    (has ? '<button class="tool-btn danger" onclick="deleteTerritory()">🗑️ 삭제</button>' : '')+'</div>';
+}
+function cancelDraft(){
+  cleanupCustomTool();
+  if(drawingManager) drawingManager.cancel();
+  if(draft){
+    if(draft.type === 'polygon' && drawingManager){ try{ drawingManager.remove(draft.shape); }catch(e){ draft.shape.setMap(null); } }
+    else draft.shape.setMap(null);
+    draft = null;
+  }
+  terrDrawing = null;
+}
+function setDraftInfo(html, canSave){
+  const i = document.getElementById('terrDraftInfo'); if(i) i.innerHTML = html;
+  const b = document.getElementById('terrSaveBtn'); if(b) b.disabled = !canSave;
+}
+function startTerrPolygon(){
+  cancelDraft(); resetTerrOverlays();
+  if(!drawingManager) initDrawingManager();
+  terrDrawing = 'polygon'; showMeasureHint(true);
+  setDraftInfo('<div style="margin-top:6px">지도를 클릭해 꼭짓점을 찍고, 마지막은 더블클릭</div>', false);
+  drawingManager.select(kakao.maps.drawing.OverlayType.POLYGON);
+}
+function onTerrPolygonDrawn(poly){
+  draft = {type:'polygon', shape:poly}; terrDrawing = null; showMeasureHint(false);
+  setDraftInfo('<div style="margin-top:6px">면적 '+formatArea(poly.getArea())+' · 꼭짓점을 끌어 다듬은 뒤 💾 저장</div>', true);
+}
+function startTerrCircle(){
+  cancelDraft(); resetTerrOverlays();
+  terrDrawing = 'circle'; showMeasureHint(true);
+  const center = new kakao.maps.LatLng(selCenter.lat, selCenter.lng);   // 중심 = 센터 위치
+  const circ = new kakao.maps.Circle({ map:map, center:center, radius:1, strokeColor:'#e11d48', strokeWeight:3, fillColor:'#e11d48', fillOpacity:0.2 });
+  setDraftInfo('<div style="margin-top:6px">마우스를 움직여 반경을 정하고 클릭 (또는 숫자 직접 입력)</div>', false);
+  function onMove(e){ circ.setRadius(distanceMeters(center, e.latLng)); }
+  function onClick(e){
+    kakao.maps.event.removeListener(map,'mousemove',onMove); kakao.maps.event.removeListener(map,'click',onClick);
+    _customCleanup = null; terrDrawing = null; showMeasureHint(false);
+    circ.setRadius(Math.max(10, Math.round(distanceMeters(center, e.latLng))));
+    draft = {type:'circle', shape:circ}; circleInfo();
+  }
+  kakao.maps.event.addListener(map,'mousemove',onMove); kakao.maps.event.addListener(map,'click',onClick);
+  _customCleanup = function(){ kakao.maps.event.removeListener(map,'mousemove',onMove); kakao.maps.event.removeListener(map,'click',onClick); circ.setMap(null); };
+}
+function circleInfo(){
+  const r = Math.round(draft.shape.getRadius());
+  setDraftInfo('<div style="margin-top:6px">반경 <input type="number" id="terrR" value="'+r+'" min="10" step="10"> m '+
+    '<button class="tool-btn" onclick="applyRadius()">적용</button></div>', true);
+}
+function applyRadius(){
+  const v = Number(document.getElementById('terrR').value);
+  if(v >= 10 && v <= 50000) draft.shape.setRadius(v);
+}
+async function saveDraft(){
+  if(!draft || !selCenter) return;
+  let geo, type = draft.type;
+  if(type === 'circle'){ geo = {lat:selCenter.lat, lng:selCenter.lng, r:Math.round(draft.shape.getRadius())}; }
+  else { geo = {path: draft.shape.getPath().map(p=>[Number(p.getLat().toFixed(6)), Number(p.getLng().toFixed(6))])}; }
+  const btn = document.getElementById('terrSaveBtn'); if(btn){ btn.disabled = true; btn.textContent = '저장 중…'; }
+  try{
+    await postCall({action:'saveTerritory', code:selCenter.code, name:selCenter.name, type:type, geo:geo});
+    territories[selCenter.code] = {code:selCenter.code, name:selCenter.name, type:type, geo:geo};
+    cancelDraft(); renderTerrBox(); resetTerrOverlays();
+    setDraftInfo('<div style="margin-top:6px;color:#166534">✅ 저장되었습니다</div>', false);
+  }catch(e){
+    alert('저장 실패: ' + e.message);
+    if(btn){ btn.disabled = false; btn.textContent = '💾 저장'; }
+  }
+}
+async function deleteTerritory(){
+  if(!selCenter || !confirm(selCenter.name + ' 영업구역을 삭제할까요?')) return;
+  try{
+    await postCall({action:'deleteTerritory', code:selCenter.code});
+    delete territories[selCenter.code];
+    cancelDraft(); renderTerrBox(); resetTerrOverlays();
+  }catch(e){ alert('삭제 실패: ' + e.message); }
+}
+
 async function init(){
   try{
     showStatus('내 위치를 확인하는 중…');
@@ -699,7 +948,7 @@ async function init(){
       return;
     }
 
-    kakao.maps.event.addListener(map, 'idle', renderMarkers);
+    kakao.maps.event.addListener(map, 'idle', function(){ renderMarkers(); renderTerritories(); });
 
     showStatus('센터 데이터를 불러오는 중…');
     allCenters = await fetchCenters();
@@ -712,6 +961,7 @@ async function init(){
     visibleCenters = allCenters.slice();
     document.getElementById('countLabel').textContent = `${visibleCenters.length.toLocaleString()}개 센터 표시 중`;
     setTimeout(renderMarkers, 100);
+    initAuth();
   }catch(e){
     showStatus('⚠️ ' + e.message, true);
     console.error(e);
