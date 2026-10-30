@@ -854,7 +854,8 @@ function renderTerrBox(){
     (has ? '저장된 영업구역: '+(territories[selCenter.code].type==='circle'?'반경원':'다각형') : '저장된 영업구역 없음')+
     (has ? '<br><span style="color:#92400e">다시 그린 뒤 저장하면 덮어씁니다</span>' : '')+
     '<div class="row"><button class="tool-btn" onclick="startTerrPolygon()">📐 다각형</button>'+
-    '<button class="tool-btn" onclick="startTerrCircle()">⭕ 반경원</button></div>'+
+    '<button class="tool-btn" onclick="startTerrCircle()">⭕ 반경원(센터 중심)</button>'+
+    '<button class="tool-btn" onclick="startTerrCircle(true)">📍 반경원(중심 직접)</button></div>'+
     '<div id="terrDraftInfo"></div>'+
     '<div class="row"><button class="tool-btn" id="terrSaveBtn" onclick="saveDraft()" disabled>💾 저장</button>'+
     (has ? '<button class="tool-btn danger" onclick="deleteTerritory()">🗑️ 삭제</button>' : '')+'</div>';
@@ -884,18 +885,42 @@ function onTerrPolygonDrawn(poly){
   draft = {type:'polygon', shape:poly}; terrDrawing = null; showMeasureHint(false);
   setDraftInfo('<div style="margin-top:6px">면적 '+formatArea(poly.getArea())+' · 꼭짓점을 끌어 다듬은 뒤 💾 저장</div>', true);
 }
-function startTerrCircle(){
+function startTerrCircle(freeCenter, keepR){
   cancelDraft(); resetTerrOverlays();
   terrDrawing = 'circle'; showMeasureHint(true);
-  const center = new kakao.maps.LatLng(selCenter.lat, selCenter.lng);   // 중심 = 센터 위치
-  const circ = new kakao.maps.Circle({ map:map, center:center, radius:1, strokeColor:'#e11d48', strokeWeight:3, fillColor:'#e11d48', fillOpacity:0.2 });
+  const opt = { map:map, radius:keepR||1, strokeColor:'#e11d48', strokeWeight:3, fillColor:'#e11d48', fillOpacity:0.2 };
+  if(freeCenter){
+    // 중심을 센터가 아닌 곳에 두는 경우: ① 중심 클릭 → ② 반경 클릭
+    setDraftInfo('<div style="margin-top:6px">① 원의 <b>중심</b>이 될 곳을 클릭하세요</div>', false);
+    let circ = null, center = null;
+    function onMove(e){ if(circ) circ.setRadius(distanceMeters(center, e.latLng)); }
+    function onClick(e){
+      if(!center){
+        center = e.latLng;
+        circ = new kakao.maps.Circle(Object.assign({}, opt, {center:center}));
+        if(keepR){ finish(keepR); return; }
+        setDraftInfo('<div style="margin-top:6px">② 마우스로 반경을 정하고 클릭</div>', false);
+        kakao.maps.event.addListener(map,'mousemove',onMove);
+      } else finish(Math.max(10, Math.round(distanceMeters(center, e.latLng))));
+    }
+    function finish(r){
+      kakao.maps.event.removeListener(map,'mousemove',onMove); kakao.maps.event.removeListener(map,'click',onClick);
+      _customCleanup = null; terrDrawing = null; showMeasureHint(false);
+      circ.setRadius(r); draft = {type:'circle', shape:circ, center:center}; circleInfo();
+    }
+    kakao.maps.event.addListener(map,'click',onClick);
+    _customCleanup = function(){ kakao.maps.event.removeListener(map,'mousemove',onMove); kakao.maps.event.removeListener(map,'click',onClick); if(circ) circ.setMap(null); };
+    return;
+  }
+  const center = new kakao.maps.LatLng(selCenter.lat, selCenter.lng);   // 센터 위치가 중심
+  const circ = new kakao.maps.Circle(Object.assign({}, opt, {center:center}));
   setDraftInfo('<div style="margin-top:6px">마우스를 움직여 반경을 정하고 클릭 (또는 숫자 직접 입력)</div>', false);
   function onMove(e){ circ.setRadius(distanceMeters(center, e.latLng)); }
   function onClick(e){
     kakao.maps.event.removeListener(map,'mousemove',onMove); kakao.maps.event.removeListener(map,'click',onClick);
     _customCleanup = null; terrDrawing = null; showMeasureHint(false);
     circ.setRadius(Math.max(10, Math.round(distanceMeters(center, e.latLng))));
-    draft = {type:'circle', shape:circ}; circleInfo();
+    draft = {type:'circle', shape:circ, center:center}; circleInfo();
   }
   kakao.maps.event.addListener(map,'mousemove',onMove); kakao.maps.event.addListener(map,'click',onClick);
   _customCleanup = function(){ kakao.maps.event.removeListener(map,'mousemove',onMove); kakao.maps.event.removeListener(map,'click',onClick); circ.setMap(null); };
@@ -903,7 +928,8 @@ function startTerrCircle(){
 function circleInfo(){
   const r = Math.round(draft.shape.getRadius());
   setDraftInfo('<div style="margin-top:6px">반경 <input type="number" id="terrR" value="'+r+'" min="10" step="10"> m '+
-    '<button class="tool-btn" onclick="applyRadius()">적용</button></div>', true);
+    '<button class="tool-btn" onclick="applyRadius()">적용</button>'+
+    '<div class="row"><button class="tool-btn" onclick="startTerrCircle(true, Math.round(draft.shape.getRadius()))">📍 중심만 다시 찍기</button></div></div>', true);
 }
 function applyRadius(){
   const v = Number(document.getElementById('terrR').value);
@@ -912,7 +938,7 @@ function applyRadius(){
 async function saveDraft(){
   if(!draft || !selCenter) return;
   let geo, type = draft.type;
-  if(type === 'circle'){ geo = {lat:selCenter.lat, lng:selCenter.lng, r:Math.round(draft.shape.getRadius())}; }
+  if(type === 'circle'){ geo = {lat:Number(draft.center.getLat().toFixed(6)), lng:Number(draft.center.getLng().toFixed(6)), r:Math.round(draft.shape.getRadius())}; }
   else { geo = {path: draft.shape.getPath().map(p=>[Number(p.getLat().toFixed(6)), Number(p.getLng().toFixed(6))])}; }
   const btn = document.getElementById('terrSaveBtn'); if(btn){ btn.disabled = true; btn.textContent = '저장 중…'; }
   try{
