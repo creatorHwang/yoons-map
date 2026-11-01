@@ -224,7 +224,7 @@ function loadKakaoMapAndCreate(startLoc){
 
 // <script> 태그로 응답을 불러온다(JSONP) — Apps Script 웹앱을 fetch()로 부를 때
 // 가끔 발생하는 리다이렉트 우회 실패 문제를 원천적으로 피하기 위함. (변경 없음)
-function fetchCentersViaJsonp(){
+function fetchCentersViaScript(){
   return new Promise((resolve, reject)=>{
     const cbName = '__mapCb' + Date.now() + Math.floor(Math.random()*10000);
     let timeoutId;
@@ -250,6 +250,29 @@ function fetchCentersViaJsonp(){
     }, 15000);
     document.head.appendChild(script);
   });
+}
+// [수정] 쿠키를 보내지 않는 fetch를 먼저 쓴다 → 회사 구글 계정(@yoons.com 등)이 로그인된 PC에서도 동작.
+//        그래도 안 되면 기존 JSONP(<script>) 방식으로 다시 시도한다.
+async function fetchJsonCookieless(url, timeoutMs){
+  const ms = timeoutMs || 8000;
+  const ctrl = (typeof AbortController!=='undefined') ? new AbortController() : null;
+  const tid = setTimeout(()=>{ if(ctrl) ctrl.abort(); }, ms);
+  try{
+    const res = await fetch(url + (url.indexOf('?')>=0?'&':'?') + '_=' + Date.now(),
+      { method:'GET', credentials:'omit', cache:'no-store', signal: ctrl ? ctrl.signal : undefined });
+    const data = await res.json();
+    if(!data || !data.ok) throw Object.assign(new Error((data && data.error) || '데이터를 불러오지 못했습니다.'), { server:true });
+    return data;
+  } finally { clearTimeout(tid); }
+}
+async function fetchCentersViaJsonp(){
+  try{
+    const d = await fetchJsonCookieless(APPS_SCRIPT_URL + '?action=getMapCenters');
+    return d.centers || [];
+  }catch(e){
+    if(e && e.server) throw e;          // 서버가 보낸 오류는 그대로 표시
+    return fetchCentersViaScript();     // 네트워크/형식 오류 → 기존 방식으로 재시도
+  }
 }
 async function fetchCenters(){
   // 짧은 시간 안에 새로고침을 여러 번 하는 경우를 대비해, 최근 받아온 데이터를 5분간 브라우저에 캐싱해둔다.
@@ -721,7 +744,7 @@ const TERR_MAX_LEVEL = 7;      // 이 레벨보다 멀리 축소하면 영업구
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ── 서버 호출 ── */
-function jsonpCall(params){
+function jsonpCallScript(params){
   return new Promise((resolve, reject)=>{
     const cb = '__tcb' + Date.now() + Math.floor(Math.random()*10000);
     const sc = document.createElement('script');
@@ -732,6 +755,15 @@ function jsonpCall(params){
     sc.src = APPS_SCRIPT_URL + '?' + q + '&callback=' + cb + '&_=' + Date.now();
     document.head.appendChild(sc);
   });
+}
+async function jsonpCall(params){
+  const q = Object.keys(params).map(k=>k+'='+encodeURIComponent(params[k])).join('&');
+  try{
+    return await fetchJsonCookieless(APPS_SCRIPT_URL + '?' + q);
+  }catch(e){
+    if(e && e.server) throw e;
+    return jsonpCallScript(params);
+  }
 }
 async function postCall(payload){
   const res = await fetch(APPS_SCRIPT_URL, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
