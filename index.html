@@ -30,6 +30,8 @@
   .search-divider{padding:5px 12px;font-size:10.5px;color:var(--muted);background:var(--bg);font-weight:800}
 
   .bm-filters{display:flex;gap:6px;flex-wrap:wrap}
+  .bm-select{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px;font-weight:700;font-family:inherit;background:#fff;color:var(--ink);cursor:pointer}
+  .bm-select:focus{outline:none;border-color:var(--pine)}
   .bm-chip{border:1px solid var(--line);border-radius:14px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;background:#fff;color:var(--ink);white-space:nowrap}
   .bm-chip.active{color:#fff;border-color:transparent}
 
@@ -322,13 +324,8 @@ async function fetchCenters(){
 function buildBmFilters(){
   const bms = Array.from(new Set(allCenters.map(c=>c.bm).filter(Boolean))).sort(bmSortCompare);
   const wrap = document.getElementById('bmFilters');
-  const allChip = `<div class="bm-chip ${_bmActive===null?'active':''}" style="${_bmActive===null?`background:${'var(--pine)'}`:''}" onclick="setBmFilter(null)">전체</div>`;
-  const chips = bms.map(bm=>{
-    const active = _bmActive===bm;
-    const color = bmColor(bm);
-    return `<div class="bm-chip ${active?'active':''}" style="${active?`background:${color}`:''}" onclick="setBmFilter('${bm.replace(/'/g,"\\'")}')">${bmDisplayLabel(bm)}</div>`;
-  }).join('');
-  wrap.innerHTML = allChip + chips;
+  const opts = '<option value="">전체</option>' + bms.map(bm=>`<option value="${esc(bm)}" ${_bmActive===bm?'selected':''}>${esc(bmDisplayLabel(bm))}</option>`).join('');
+  wrap.innerHTML = `<select class="bm-select" onchange="setBmFilter(this.value||null)" title="형태별 보기">${opts}</select>`;
 
   const legend = document.getElementById('legend');
   legend.innerHTML = bms.map(bm=>`<div><span class="dot" style="background:${bmColor(bm)}"></span>${bmDisplayLabel(bm)}</div>`).join('');
