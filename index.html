@@ -87,6 +87,22 @@
   .terr-box input[type=number]{width:80px;padding:4px;border:1px solid var(--line);border-radius:4px;font-size:12px}
   .tool-btn.danger{color:#b91c1c}
   .tool-btn.hidden{display:none}
+  .view-modes{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+  .view-modes .tool-btn{padding:5px 10px;border-radius:14px}
+  .m-x{margin-left:8px;cursor:pointer;color:#fca5a5;font-weight:900}
+  .m-x:hover{color:#fff}
+  .ctx-menu{position:absolute;z-index:40;background:#fff;border:1px solid var(--line);border-radius:8px;
+    box-shadow:0 6px 18px rgba(0,0,0,.22);padding:4px;min-width:200px;font-size:12.5px}
+  .ctx-item{padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:700;white-space:nowrap}
+  .ctx-item:hover{background:var(--pine-soft)}
+  .ctx-item.danger{color:#b91c1c}
+  .ctx-body{padding:8px 10px;line-height:1.6;max-width:280px;white-space:normal}
+  .ctx-body input,.ctx-body select{width:100%;margin:3px 0 6px;padding:6px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;font-family:inherit}
+  .ctx-body .row{display:flex;gap:6px}
+  .ctx-body .tool-btn{flex:1;text-align:center}
+  .planned-box{display:flex;flex-direction:column;align-items:center;background:#fff;border:2px dashed #e11d48;border-radius:8px;
+    padding:3px 8px 4px;box-shadow:0 2px 6px rgba(0,0,0,.18);white-space:nowrap;cursor:pointer;transform:translate(-50%,-100%)}
+  .planned-box .marker-bm{color:#e11d48}
 </style>
 </head>
 <body>
@@ -101,6 +117,13 @@
       <div id="searchResults" class="search-results"></div>
     </div>
     <div class="bm-filters" id="bmFilters"></div>
+    <div class="view-modes" id="viewModes">
+      <button class="tool-btn" id="tool-cadastral" onclick="toggleCadastral()">🗺️ 지적편집도</button>
+      <button class="tool-btn hidden" id="tool-terr" onclick="toggleTerritoryView()">🧭 영업구역 보기</button>
+      <button class="tool-btn hidden" id="tool-planned" onclick="togglePlannedView()">🏗️ 개설예정지 보기</button>
+      <button class="tool-btn" id="tool-unlock" onclick="unlockByPrompt()">🔑 편집 잠금해제</button>
+      <button class="tool-btn hidden" id="tool-edit" onclick="toggleEditMode()">✏️ 영업구역 편집</button>
+    </div>
   </header>
   <div id="mapWrap">
     <div id="map"></div>
@@ -112,10 +135,6 @@
       <button class="tool-btn" id="tool-area" onclick="selectMeasureTool('area')">📐 영업구역 그리기(다각형)</button>
       <button class="tool-btn" id="tool-radius" onclick="selectMeasureTool('radius')">⭕ 반경 그리기</button>
       <button class="tool-btn" id="tool-clear" onclick="clearMeasurements()">🗑️ 그린 것 지우기</button>
-      <button class="tool-btn" id="tool-cadastral" onclick="toggleCadastral()">🗺️ 지적편집도</button>
-      <button class="tool-btn hidden" id="tool-terr" onclick="toggleTerritoryView()">🧭 영업구역 보기</button>
-      <button class="tool-btn" id="tool-unlock" onclick="unlockByPrompt()">🔑 편집 잠금해제</button>
-      <button class="tool-btn hidden" id="tool-edit" onclick="toggleEditMode()">✏️ 영업구역 편집</button>
       <div class="terr-box" id="terrBox"></div>
     </div>
   </div>
@@ -421,8 +440,9 @@ function makeMarkerOverlay(center){
   const el = document.createElement('div');
   el.className = 'marker-box';
   el.style.borderColor = color;
-  el.innerHTML = `<div class="marker-bm" style="color:${color}">${bmDisplayLabel(center.bm)}</div><div class="marker-name">${center.name}</div>`;
+  el.innerHTML = `<div class="marker-bm" style="color:${color}">${bmDisplayLabel(center.bm)}</div><div class="marker-name">${center.name}${center.adj?' <span title="위치 보정됨">📌</span>':''}</div>`;
   el.addEventListener('click', ()=>{ if(editMode) selectCenterForEdit(center); });
+  el.addEventListener('contextmenu', ev=>{ ev.preventDefault(); ev.stopPropagation(); if(currentTool || terrDrawing || _plannedMove) return; openCenterMenu(center, el); });
   if(editMode) el.style.cursor='pointer';
   const overlay = new kakao.maps.CustomOverlay({
     position: pos,
@@ -514,6 +534,21 @@ function distanceMeters(a, b){
   return 2*R*Math.asin(Math.sqrt(h));
 }
 
+// 완성된 거리/반경 결과 1세트(도형+라벨). 라벨의 × 를 누르면 이 세트만 지운다.
+function addMeasureResult(shape, text, pos){
+  const el = document.createElement('div');
+  el.className = 'measure-label';
+  el.innerHTML = '<span></span><span class="m-x" title="이 항목만 삭제">×</span>';
+  el.firstChild.textContent = text;
+  const ov = new kakao.maps.CustomOverlay({ position:pos, content:el, xAnchor:0, yAnchor:1, zIndex:25, clickable:true });
+  ov.setMap(map);
+  el.querySelector('.m-x').addEventListener('click', function(ev){
+    ev.stopPropagation();
+    shape.setMap(null); ov.setMap(null);
+    _customOverlays = _customOverlays.filter(o=>o!==shape && o!==ov);
+  });
+  _customOverlays.push(shape, ov);
+}
 function showMeasureText(text){
   const box = document.getElementById('measureResult');
   box.textContent = text;
@@ -523,7 +558,7 @@ function showMeasureHint(show){
   document.getElementById('measureHint').style.display = show ? 'block' : 'none';
 }
 function setActiveToolButton(mode){
-  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
+  ['distance','area','radius'].forEach(id=>document.getElementById('tool-'+id).classList.remove('active'));
   if(mode) document.getElementById('tool-'+mode).classList.add('active');
 }
 
@@ -572,12 +607,7 @@ function startDistanceMeasure(){
       strokeColor:'#e11d48', strokeWeight:3
     });
     const dist = finalLine.getLength();
-    const endEl = document.createElement('div');
-    endEl.className = 'measure-label';
-    endEl.textContent = '거리: ' + formatDistance(dist);
-    const endOverlay = new kakao.maps.CustomOverlay({ position:p2, content:endEl, xAnchor:0, yAnchor:1, zIndex:25 });
-    endOverlay.setMap(map); // 마감한 지점(B)에 최종 거리 라벨을 남긴다
-    _customOverlays.push(finalLine, endOverlay);
+    addMeasureResult(finalLine, '거리: ' + formatDistance(dist), p2); // 마감한 지점(B)에 최종 거리 라벨(×로 개별 삭제)
     showMeasureText('거리: ' + formatDistance(dist));
     showMeasureHint(false);
     currentTool = null;
@@ -629,12 +659,7 @@ function startRadiusMeasure(){
     const r = distanceMeters(center, edge);
     moveCircle.setRadius(r);
     labelOverlay.setMap(null); // 따라다니던 라벨은 지우고
-    const endEl = document.createElement('div');
-    endEl.className = 'measure-label';
-    endEl.textContent = '반경: ' + formatDistance(r);
-    const endOverlay = new kakao.maps.CustomOverlay({ position:edge, content:endEl, xAnchor:0, yAnchor:1, zIndex:25 });
-    endOverlay.setMap(map); // 마감한 지점(반지름 끝)에 최종 반경 라벨을 남긴다
-    _customOverlays.push(moveCircle, endOverlay);
+    addMeasureResult(moveCircle, '반경: ' + formatDistance(r), edge); // 반지름 끝에 최종 반경 라벨(×로 개별 삭제)
     showMeasureText('반경: ' + formatDistance(r));
     showMeasureHint(false);
     currentTool = null;
@@ -707,6 +732,7 @@ function clearMeasurements(){
 // Esc 키로 진행 중인 거리재기/면적재기/반경재기를 취소한다
 document.addEventListener('keydown', function(e){
   if(e.key !== 'Escape') return;
+  closeCtx(); cancelPlannedMove();
   cleanupCustomTool();
   if(drawingManager) drawingManager.cancel();
   currentTool = null;
@@ -795,6 +821,8 @@ async function tryKey(k, silent){
     document.getElementById('tool-unlock').classList.add('hidden');
     document.getElementById('tool-terr').classList.remove('hidden');
     document.getElementById('tool-edit').classList.remove('hidden');
+    try{ const pd = await jsonpCall({action:'getPlanned', apiKey:k}); planned = {}; (pd.planned||[]).forEach(x=>{ planned[x.id] = x; }); }catch(e){ planned = {}; } // 서버에 Planned.gs 가 아직 없어도 영업구역은 정상 동작
+    syncPlannedBtn(); renderPlanned();
     renderTerritories();
     return true;
   }catch(e){
@@ -992,6 +1020,194 @@ async function deleteTerritory(){
   }catch(e){ alert('삭제 실패: ' + e.message); }
 }
 
+/* ============================================================
+   우클릭 메뉴 · 개설 예정지
+   - 지도 아무 곳이나 우클릭 → ① 현재 위치 주소  ② 개설 예정지 등록
+   - 개설 예정지는 편집 키가 있어야 저장·표시된다(영업구역과 동일). 시트 'planned' 탭에 저장.
+   ============================================================ */
+let planned = {};              // id -> {id,name,form,lat,lng,addr}
+let plannedShown = true;
+let plannedOverlays = {};      // id -> CustomOverlay
+let ctxEl = null;
+let geocoder = null;
+let _plannedMove = null;       // 위치 옮기기 중인 예정지 id
+const PLANNED_FORM_OPTS = [['IGSE','IGSE'],['영어숲','영어숲'],['교습소','교습소'],['공부방','공부방'],['우영(상가형)','학원(상가형)'],['학원','학원']];
+
+function closeCtx(){ if(ctxEl){ ctxEl.remove(); ctxEl = null; } }
+function openCtxBox(point, html){
+  closeCtx();
+  const wrap = document.getElementById('mapWrap');
+  ctxEl = document.createElement('div');
+  ctxEl.className = 'ctx-menu';
+  ctxEl.innerHTML = html;
+  ctxEl.addEventListener('mousedown', e=>e.stopPropagation());
+  ctxEl.addEventListener('contextmenu', e=>e.preventDefault());
+  wrap.appendChild(ctxEl);
+  const w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
+  ctxEl.style.left = Math.max(4, Math.min(point.x, wrap.clientWidth - w - 4)) + 'px';
+  ctxEl.style.top  = Math.max(4, Math.min(point.y, wrap.clientHeight - h - 4)) + 'px';
+}
+function lookupAddress(latLng){
+  return new Promise(resolve=>{
+    try{
+      if(!geocoder) geocoder = new kakao.maps.services.Geocoder();
+      geocoder.coord2Address(latLng.getLng(), latLng.getLat(), function(res, status){
+        if(status !== kakao.maps.services.Status.OK || !res.length){ resolve(null); return; }
+        const r = res[0];
+        resolve({ road: r.road_address ? r.road_address.address_name : '', jibun: r.address ? r.address.address_name : '' });
+      });
+    }catch(e){ resolve(null); }
+  });
+}
+function copyText(t){
+  try{ if(navigator.clipboard && navigator.clipboard.writeText){ return navigator.clipboard.writeText(t); } }catch(e){}
+  const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); }catch(e){} ta.remove();
+  return Promise.resolve();
+}
+function addrText(a){ return a ? (a.road || a.jibun) : ''; }
+
+function openMapMenu(latLng, point){
+  openCtxBox(point,
+    '<div class="ctx-item" id="ctxAddr">📍 현재 위치 주소</div>'+
+    '<div class="ctx-item" id="ctxPlan">🏗️ 개설 예정지 등록</div>');
+  document.getElementById('ctxAddr').onclick = async function(){
+    openCtxBox(point, '<div class="ctx-body">주소를 찾는 중…</div>');
+    const a = await lookupAddress(latLng);
+    const t = addrText(a);
+    openCtxBox(point, '<div class="ctx-body">'+
+      (a ? (a.road?'<b>도로명</b> '+esc(a.road)+'<br>':'')+(a.jibun?'<b>지번</b> '+esc(a.jibun):'') : '주소를 찾지 못했습니다.')+
+      '<div class="row" style="margin-top:6px">'+(t?'<button class="tool-btn" id="ctxCopy">복사</button>':'')+'<button class="tool-btn" id="ctxClose">닫기</button></div></div>');
+    const c = document.getElementById('ctxCopy'); if(c) c.onclick = function(){ copyText(t).then(()=>{ c.textContent='복사됨 ✓'; }); };
+    document.getElementById('ctxClose').onclick = closeCtx;
+  };
+  document.getElementById('ctxPlan').onclick = function(){ openPlannedForm(latLng, point); };
+}
+
+async function openPlannedForm(latLng, point){
+  if(!API_KEY){
+    openCtxBox(point, '<div class="ctx-body">개설 예정지 저장은 <b>편집 잠금해제</b> 후 가능합니다.<br>(통합 캔버스 안에서는 자동 해제)<div class="row" style="margin-top:6px"><button class="tool-btn" id="ctxClose">닫기</button></div></div>');
+    document.getElementById('ctxClose').onclick = closeCtx; return;
+  }
+  const opts = PLANNED_FORM_OPTS.map(o=>'<option value="'+esc(o[1])+'">'+esc(o[0])+'</option>').join('');
+  openCtxBox(point, '<div class="ctx-body"><b>🏗️ 개설 예정지 등록</b><br>'+
+    '<span id="plAddr" style="color:#6b7280;font-size:11.5px">주소 확인 중…</span><br>'+
+    '센터명<input id="plName" maxlength="40" placeholder="예) (H)OO센터"> 형태<select id="plForm">'+opts+'</select>'+
+    '<div class="row"><button class="tool-btn" id="plSave">💾 저장</button><button class="tool-btn" id="ctxClose">취소</button></div></div>');
+  let addr = '';
+  lookupAddress(latLng).then(a=>{ addr = addrText(a); const el = document.getElementById('plAddr'); if(el) el.textContent = addr || '주소 없음'; });
+  document.getElementById('ctxClose').onclick = closeCtx;
+  document.getElementById('plName').focus();
+  document.getElementById('plSave').onclick = async function(){
+    const name = document.getElementById('plName').value.trim();
+    if(!name){ document.getElementById('plName').focus(); return; }
+    const btn = this; btn.disabled = true; btn.textContent = '저장 중…';
+    const item = { id:'P'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36), name:name,
+                   form:document.getElementById('plForm').value, lat:Number(latLng.getLat().toFixed(6)), lng:Number(latLng.getLng().toFixed(6)), addr:addr };
+    try{
+      await postCall(Object.assign({action:'savePlanned'}, item));
+      planned[item.id] = item; plannedShown = true; syncPlannedBtn(); renderPlanned(); closeCtx();
+    }catch(e){ alert('저장 실패: ' + e.message); btn.disabled = false; btn.textContent = '💾 저장'; }
+  };
+}
+
+/* ── 개설 예정지 표시 ── */
+function renderPlanned(){
+  if(!map) return;
+  Object.keys(plannedOverlays).forEach(id=>{ plannedOverlays[id].setMap(null); });
+  plannedOverlays = {};
+  if(!plannedShown || !API_KEY) return;
+  Object.keys(planned).forEach(id=>{
+    const p = planned[id];
+    const el = document.createElement('div');
+    el.className = 'planned-box';
+    el.innerHTML = '<div class="marker-bm">예정 · '+esc(bmDisplayLabel(p.form))+'</div><div class="marker-name">'+esc(p.name)+'</div>';
+    el.addEventListener('click', function(ev){ ev.stopPropagation(); openPlannedMenu(p, el); });
+    el.addEventListener('contextmenu', function(ev){ ev.preventDefault(); ev.stopPropagation(); openPlannedMenu(p, el); });
+    const ov = new kakao.maps.CustomOverlay({ position:new kakao.maps.LatLng(p.lat,p.lng), content:el, xAnchor:0, yAnchor:0, zIndex:12, clickable:true });
+    ov.setMap(map); plannedOverlays[id] = ov;
+  });
+}
+function syncPlannedBtn(){
+  const b = document.getElementById('tool-planned'); if(!b) return;
+  b.classList.toggle('hidden', !API_KEY);
+  b.classList.toggle('active', plannedShown);
+}
+function togglePlannedView(){ plannedShown = !plannedShown; syncPlannedBtn(); renderPlanned(); }
+
+/* ── 기존 센터 위치 보정 (서버 시트 center_pos, 모두에게 반영) ── */
+function openCenterMenu(c, el){
+  const wrap = document.getElementById('mapWrap');
+  const r = el.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+  const pt = {x:r.left - w.left, y:r.bottom - w.top + 4};
+  const head = '<div class="ctx-body"><b>'+esc(c.name)+'</b> ('+esc(bmDisplayLabel(c.bm))+')'+(c.address?'<br><span style="color:#6b7280;font-size:11.5px">'+esc(c.address)+'</span>':'')+
+    (c.adj?'<br><span style="color:#92400e;font-size:11.5px">📌 위치 보정됨(원본과 '+formatDistance(distanceMeters(new kakao.maps.LatLng(c.lat,c.lng), new kakao.maps.LatLng(c.olat,c.olng)))+' 차이)</span>':'')+'</div>';
+  if(!API_KEY){
+    openCtxBox(pt, head+'<div class="ctx-body" style="padding-top:0">위치 보정은 <b>편집 잠금해제</b> 후 가능합니다.</div><div class="ctx-item" id="ctxClose">닫기</div>');
+    document.getElementById('ctxClose').onclick = closeCtx; return;
+  }
+  openCtxBox(pt, head+'<div class="ctx-item" id="cpMove">📌 위치 옮기기</div>'+(c.adj?'<div class="ctx-item danger" id="cpReset">↩️ 원래 위치로 되돌리기</div>':''));
+  document.getElementById('cpMove').onclick = function(){ closeCtx(); startCenterMove(c); };
+  const rb = document.getElementById('cpReset');
+  if(rb) rb.onclick = async function(){
+    if(!confirm(c.name+' 위치를 원본으로 되돌릴까요?')) return;
+    try{ await postCall({action:'resetCenterPos', code:c.code}); c.lat=c.olat; c.lng=c.olng; c.adj=0; delete c.olat; delete c.olng; closeCtx(); renderMarkers(); }
+    catch(e){ alert('되돌리기 실패: ' + e.message); }
+  };
+}
+function startCenterMove(c){
+  cancelPlannedMove();
+  _plannedMove = { id:c.code };
+  showStatus('📌 "'+c.name+'" 마커 끝(뾰족한 곳)이 놓일 위치를 클릭하세요 (Esc 취소)');
+  function onClick(e){
+    const ll = e.latLng;
+    const base = c.adj ? new kakao.maps.LatLng(c.olat, c.olng) : new kakao.maps.LatLng(c.lat, c.lng);
+    const d = distanceMeters(new kakao.maps.LatLng(c.lat, c.lng), ll);
+    cancelPlannedMove();
+    if(distanceMeters(base, ll) > 3000){ alert('원본 위치에서 3km 넘게는 옮길 수 없습니다.'); return; }
+    if(!confirm(c.name+' 위치를 '+formatDistance(d)+' 옮길까요?'+(d>=500?'\n※ 500m 이상 큰 이동입니다. 맞는지 확인해 주세요.':'')+'\n저장하면 지도를 보는 모든 사람에게 반영됩니다.')) return;
+    const lat = Number(ll.getLat().toFixed(6)), lng = Number(ll.getLng().toFixed(6));
+    postCall({action:'saveCenterPos', code:c.code, lat:lat, lng:lng}).then(function(){
+      if(!c.adj){ c.olat = c.lat; c.olng = c.lng; }
+      c.lat = lat; c.lng = lng; c.adj = 1; renderMarkers();
+    }).catch(function(err){ alert('위치 저장 실패: ' + err.message); });
+  }
+  _plannedMove.off = function(){ kakao.maps.event.removeListener(map, 'click', onClick); };
+  kakao.maps.event.addListener(map, 'click', onClick);
+}
+
+function openPlannedMenu(p, el){
+  const wrap = document.getElementById('mapWrap');
+  const r = el.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+  openCtxBox({x:r.left - w.left, y:r.bottom - w.top + 4},
+    '<div class="ctx-body"><b>'+esc(p.name)+'</b> (개설 예정 · '+esc(bmDisplayLabel(p.form))+')'+(p.addr?'<br><span style="color:#6b7280;font-size:11.5px">'+esc(p.addr)+'</span>':'')+'</div>'+
+    '<div class="ctx-item" id="plMove">📌 위치 옮기기</div><div class="ctx-item danger" id="plDel">🗑️ 삭제</div>');
+  document.getElementById('plMove').onclick = function(){ closeCtx(); startPlannedMove(p); };
+  document.getElementById('plDel').onclick = async function(){
+    if(!confirm(p.name + ' 개설 예정지를 삭제할까요?')) return;
+    try{ await postCall({action:'deletePlanned', id:p.id}); delete planned[p.id]; renderPlanned(); closeCtx(); }
+    catch(e){ alert('삭제 실패: ' + e.message); }
+  };
+}
+// 위치 옮기기: 지도에서 새 위치를 한 번 클릭하면 이동·저장 (Esc 취소)
+function startPlannedMove(p){
+  cancelPlannedMove();
+  _plannedMove = { id:p.id };
+  showStatus('📌 "'+p.name+'"을(를) 옮길 위치를 지도에서 클릭하세요 (Esc 취소)');
+  function onClick(e){
+    const ll = e.latLng, old = { lat:p.lat, lng:p.lng };
+    p.lat = Number(ll.getLat().toFixed(6)); p.lng = Number(ll.getLng().toFixed(6));
+    cancelPlannedMove(); renderPlanned();
+    lookupAddress(ll).then(a=>{ p.addr = addrText(a) || p.addr; return postCall(Object.assign({action:'savePlanned'}, p)); })
+      .catch(err=>{ alert('이동 저장 실패: ' + err.message); p.lat = old.lat; p.lng = old.lng; renderPlanned(); });
+  }
+  _plannedMove.off = function(){ kakao.maps.event.removeListener(map, 'click', onClick); };
+  kakao.maps.event.addListener(map, 'click', onClick);
+}
+function cancelPlannedMove(){
+  if(_plannedMove){ if(_plannedMove.off) _plannedMove.off(); _plannedMove = null; showStatus(''); }
+}
+
 async function init(){
   try{
     showStatus('내 위치를 확인하는 중…');
@@ -1007,6 +1223,12 @@ async function init(){
     }
 
     kakao.maps.event.addListener(map, 'idle', function(){ renderMarkers(); renderTerritories(); });
+    document.getElementById('map').addEventListener('contextmenu', e=>e.preventDefault()); // 브라우저 기본 우클릭 메뉴 막기
+    kakao.maps.event.addListener(map, 'rightclick', function(e){
+      if(currentTool || terrDrawing || _plannedMove) return;   // 그리는 중에는 메뉴를 띄우지 않는다
+      openMapMenu(e.latLng, e.point);
+    });
+    ['click','dragstart','zoom_start'].forEach(ev=>kakao.maps.event.addListener(map, ev, closeCtx));
 
     showStatus('센터 데이터를 불러오는 중…');
     allCenters = await fetchCenters();
