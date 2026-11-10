@@ -45,6 +45,9 @@
     white-space:nowrap;cursor:pointer;transform:translate(-50%,-100%);
     position:relative;
   }
+  .marker-box.sus{opacity:.5;filter:grayscale(.75);border-style:dashed}
+  .marker-box.rem{opacity:.38;filter:grayscale(1);border-style:dotted}
+  .marker-tag{display:inline-block;margin-left:4px;padding:0 4px;border-radius:6px;background:#6b7280;color:#fff;font-size:10px;font-weight:700}
   .marker-box::after{
     content:'';position:absolute;left:50%;bottom:-7px;transform:translateX(-50%);
     border-left:6px solid transparent;border-right:6px solid transparent;border-top:7px solid var(--pine);
@@ -122,6 +125,7 @@
     <div class="view-modes" id="viewModes">
       <button class="tool-btn" id="tool-cadastral" onclick="toggleCadastral()">🗺️ 지적편집도</button>
       <button class="tool-btn hidden" id="tool-terr" onclick="toggleTerritoryView()">🧭 영업구역 보기</button>
+      <button class="tool-btn hidden" id="tool-closed" onclick="toggleClosedView()">🚫 해지 센터 보기</button>
       <button class="tool-btn hidden" id="tool-planned" onclick="togglePlannedView()">🏗️ 개설예정지 보기</button>
       <button class="tool-btn" id="tool-unlock" onclick="unlockByPrompt()">🔑 편집 잠금해제</button>
       <button class="tool-btn hidden" id="tool-edit" onclick="toggleEditMode()">✏️ 영업구역 편집</button>
@@ -178,6 +182,9 @@ function bmDisplayLabel(bm){
 }
 
 let map = null;
+let userEmail = '';        // 대시보드가 알려 주는 담당자 접속 이메일(처리 기록용)
+let closedShown = false;   // 해지 센터 보기(편집 키가 있을 때만 켤 수 있음)
+function centerShown(c){ return c.st !== 'rem' || (closedShown && !!API_KEY); }
 let allCenters = [];       // 서버에서 받은 원본 전체
 let visibleCenters = [];   // BM 필터 적용된 목록
 let _bmActive = null;      // null = 전체, 문자열 = 그 BM만
@@ -336,9 +343,13 @@ function setBmFilter(bm){
   buildBmFilters();
   applyFilterAndRender();
 }
+function updateCountLabel(){
+  const sus = allCenters.filter(c=>c.st==='sus').length;
+  document.getElementById('countLabel').textContent = `${visibleCenters.length.toLocaleString()}개 센터 표시 중` + (sus ? ` · 해지 확인 대기 ${sus}곳(흐리게 표시)` : '');
+}
 function applyFilterAndRender(){
-  visibleCenters = _bmActive ? allCenters.filter(c=>c.bm===_bmActive) : allCenters.slice();
-  document.getElementById('countLabel').textContent = `${visibleCenters.length.toLocaleString()}개 센터 표시 중`;
+  visibleCenters = allCenters.filter(c=>centerShown(c) && (!_bmActive || c.bm===_bmActive));
+  updateCountLabel();
   renderMarkers();
 }
 
@@ -362,7 +373,7 @@ function onSearchInput(v){
   box._placeMatches = null; // 입력이 바뀌면 이전 "주변 장소" 결과는 무효화
   const q = v.trim().toLowerCase();
   if(!q){ box.style.display='none'; box.innerHTML=''; return; }
-  const matches = allCenters.filter(c=>(c.address||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q)).slice(0,15);
+  const matches = allCenters.filter(c=>centerShown(c) && ((c.address||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q))).slice(0,15);
   if(!matches.length){
     box.innerHTML = '<div class="search-item" style="color:var(--muted)">일치하는 센터가 없습니다. (Enter를 누르면 주변 장소도 찾아봅니다)</div>';
     box.style.display = 'block';
@@ -435,9 +446,10 @@ function makeMarkerOverlay(center){
   const pos = new kakao.maps.LatLng(center.lat, center.lng);
   const color = bmColor(center.bm);
   const el = document.createElement('div');
-  el.className = 'marker-box';
+  el.className = 'marker-box' + (center.st ? ' ' + center.st : '');
   el.style.borderColor = color;
-  el.innerHTML = `<div class="marker-bm" style="color:${color}">${bmDisplayLabel(center.bm)}</div><div class="marker-name">${center.name}${center.adj?' <span title="위치 보정됨">📌</span>':''}</div>`;
+  const stTag = center.st === 'sus' ? '<span class="marker-tag" title="'+esc(center.why||'')+'">해지?</span>' : center.st === 'rem' ? '<span class="marker-tag">해지</span>' : '';
+  el.innerHTML = `<div class="marker-bm" style="color:${color}">${bmDisplayLabel(center.bm)}</div><div class="marker-name">${center.name}${center.adj?' <span title="위치 보정됨">📌</span>':''}${stTag}</div>`;
   el.addEventListener('click', ()=>{ if(editMode) selectCenterForEdit(center); });
   el.addEventListener('contextmenu', ev=>{ ev.preventDefault(); ev.stopPropagation(); if(currentTool || terrDrawing || _plannedMove) return; openCenterMenu(center, el); });
   if(editMode) el.style.cursor='pointer';
@@ -811,7 +823,7 @@ function initAuth(){
   window.addEventListener('message', function(e){
     if(PARENT_ORIGINS.indexOf(e.origin) < 0) return;           // 모르는 주소가 보낸 건 무시
     const d = e.data;
-    if(d && d.type === 'yoonsmap-auth' && typeof d.apiKey === 'string') tryKey(d.apiKey, true);
+    if(d && d.type === 'yoonsmap-auth' && typeof d.apiKey === 'string'){ if(typeof d.email === 'string') userEmail = d.email.trim(); tryKey(d.apiKey, true); }
   });
   if(window.parent !== window) window.parent.postMessage({type:'yoonsmap-ready'}, '*'); // 키 없이 "준비됐다"만 알림
   let saved = '';
@@ -828,6 +840,7 @@ async function tryKey(k, silent){
     document.getElementById('tool-unlock').classList.add('hidden');
     document.getElementById('tool-terr').classList.remove('hidden');
     document.getElementById('tool-edit').classList.remove('hidden');
+    document.getElementById('tool-closed').classList.remove('hidden'); syncClosedBtn();
     try{ const pd = await jsonpCall({action:'getPlanned', apiKey:k}); planned = {}; (pd.planned||[]).forEach(x=>{ planned[x.id] = x; }); }catch(e){ planned = {}; } // 서버에 Planned.gs 가 아직 없어도 영업구역은 정상 동작
     syncPlannedBtn(); renderPlanned();
     renderTerritories();
@@ -1183,14 +1196,65 @@ function openCenterMenu(c, el){
     openCtxBox(pt, head+'<div class="ctx-body" style="padding-top:0">위치 보정은 <b>편집 잠금해제</b> 후 가능합니다.</div><div class="ctx-item" id="ctxClose">닫기</div>');
     document.getElementById('ctxClose').onclick = closeCtx; return;
   }
-  openCtxBox(pt, head+'<div class="ctx-item" id="cpMove">📌 위치 옮기기</div>'+(c.adj?'<div class="ctx-item danger" id="cpReset">↩️ 원래 위치로 되돌리기</div>':''));
+  const stItems = c.st === 'sus'
+    ? '<div class="ctx-body" style="padding-top:0;color:#92400e">⚠ 해지 의심 ('+esc(c.why||'')+')</div><div class="ctx-item danger" id="stRemove">🚫 해지 확인 → 지도에서 제거</div><div class="ctx-item" id="stKeep">✅ 해지 아님 → 정상 표시</div>'
+    : c.st === 'rem' ? '<div class="ctx-body" style="padding-top:0;color:#6b7280">해지 확인된 센터(지도에서 제거됨)</div><div class="ctx-item" id="stKeep">↩️ 복원 → 정상 표시</div>'
+    : '<div class="ctx-item danger" id="stRemove">🚫 해지 확인 → 지도에서 제거</div>';   // 실적에 해지가 아직 반영되지 않은 센터도 담당자가 직접 제거
+  openCtxBox(pt, head+stItems+'<div class="ctx-item" id="cpMove">📌 위치 옮기기</div>'+(c.adj?'<div class="ctx-item danger" id="cpReset">↩️ 원래 위치로 되돌리기</div>':''));
   document.getElementById('cpMove').onclick = function(){ closeCtx(); startCenterMove(c); };
+  const sr = document.getElementById('stRemove'); if(sr) sr.onclick = function(){ closeCtx(); setCenterStatus(c, 'removed'); };
+  const sk = document.getElementById('stKeep'); if(sk) sk.onclick = function(){ closeCtx(); setCenterStatus(c, 'keep'); };
   const rb = document.getElementById('cpReset');
   if(rb) rb.onclick = async function(){
     if(!confirm(c.name+' 위치를 원본으로 되돌릴까요?')) return;
     try{ await postCall({action:'resetCenterPos', code:c.code}); c.lat=c.olat; c.lng=c.olng; c.adj=0; delete c.olat; delete c.olng; closeCtx(); renderMarkers(); }
     catch(e){ alert('되돌리기 실패: ' + e.message); }
   };
+}
+/* ── 해지 센터 확인 (서버 시트 map_status, 모두에게 반영) ──
+   확인창(confirm)은 대시보드 안에서 브라우저가 막는 경우가 있어 쓰지 않고, 결과는 화면 상단 안내로 알린다 */
+/* 확인창: 기본은 브라우저 확인창(위치 옮기기와 동일). 브라우저가 막아서 즉시 '취소'가 돌아오면 화면 안의 확인창으로 대신한다 */
+function askConfirm(msg){
+  const t0 = Date.now();
+  const ok = confirm(msg);
+  if(ok || Date.now() - t0 > 150) return Promise.resolve(ok);
+  return new Promise(function(resolve){
+    const bg = document.createElement('div');
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:99999;display:flex;align-items:center;justify-content:center';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#fff;border-radius:12px;padding:20px 22px;max-width:360px;font-size:14px;line-height:1.6;box-shadow:0 8px 30px rgba(0,0,0,.25)';
+    box.innerHTML = '<div style="white-space:pre-line;margin-bottom:16px">'+esc(msg)+'</div><div style="text-align:right"><button class="tool-btn" id="acNo">취소</button> <button class="tool-btn" id="acYes" style="background:#2563eb;color:#fff">확인</button></div>';
+    bg.appendChild(box); document.body.appendChild(bg);
+    const done = function(v){ bg.remove(); resolve(v); };
+    box.querySelector('#acYes').onclick = function(){ done(true); };
+    box.querySelector('#acNo').onclick = function(){ done(false); };
+  });
+}
+async function setCenterStatus(c, status){
+  if(status === 'removed'){
+    const ok = await askConfirm('"'+c.name+'"을(를) 해지 센터로 확인하고 지도에서 제거할까요?\n저장하면 지도를 보는 모든 사람에게 반영됩니다.\n(실수라면 "🚫 해지 센터 보기"에서 복원할 수 있습니다)');
+    if(!ok) return;
+  }
+  try{
+    if(!userEmail){   // 대시보드 밖에서 열었을 때: 누가 처리했는지 남기기 위해 한 번 물어본다
+      try{ userEmail = (prompt('처리 기록에 남길 본인 이메일을 입력하세요') || '').trim(); }catch(e){}
+    }
+    await postCall({action:'setMapStatus', code:c.code, name:c.name, status:status, by:userEmail || '(이메일 미확인)'});
+    if(status === 'removed'){ c.st = 'rem'; c.why = c.why || '해지 확인'; showStatus('🚫 "'+c.name+'"을(를) 지도에서 제거했습니다. (해지 센터 보기에서 복원할 수 있습니다)'); }
+    else { delete c.st; delete c.why; showStatus('✅ "'+c.name+'"을(를) 정상 센터로 표시합니다.'); }
+    try{ localStorage.removeItem('yoonsmap_centers_cache_v1'); }catch(e){}
+    applyFilterAndRender(); syncClosedBtn();
+    setTimeout(function(){ showStatus(''); }, 4000);
+  }catch(e){ console.error(e); showStatus('⚠️ 저장 실패: ' + e.message, true); }
+}
+function syncClosedBtn(){
+  const b = document.getElementById('tool-closed'); if(!b) return;
+  const n = allCenters.filter(c=>c.st==='rem').length;
+  b.classList.toggle('active', closedShown);
+  b.textContent = '🚫 해지 센터 보기' + (n ? ' ('+n+')' : '');
+}
+function toggleClosedView(){
+  closedShown = !closedShown; syncClosedBtn(); applyFilterAndRender();
 }
 function startCenterMove(c){
   cancelPlannedMove();
@@ -1275,8 +1339,8 @@ async function init(){
       showStatus('표시할 센터가 없습니다 — Google Sheet에 좌표(K·L열)가 채워졌는지 확인해 주세요.', true);
     }
     buildBmFilters();
-    visibleCenters = allCenters.slice();
-    document.getElementById('countLabel').textContent = `${visibleCenters.length.toLocaleString()}개 센터 표시 중`;
+    visibleCenters = allCenters.filter(centerShown);
+    updateCountLabel();
     setTimeout(renderMarkers, 100);
     initAuth();
   }catch(e){
