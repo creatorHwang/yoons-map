@@ -1207,7 +1207,7 @@ function openCenterMenu(c, el){
   const rb = document.getElementById('cpReset');
   if(rb) rb.onclick = async function(){
     if(!confirm(c.name+' 위치를 원본으로 되돌릴까요?')) return;
-    try{ await postCall({action:'resetCenterPos', code:c.code}); c.lat=c.olat; c.lng=c.olng; c.adj=0; delete c.olat; delete c.olng; closeCtx(); renderMarkers(); }
+    try{ await postCall({action:'resetCenterPos', code:c.code, name:c.name, by:whoIsEditing()}); c.lat=c.olat; c.lng=c.olng; c.adj=0; delete c.olat; delete c.olng; closeCtx(); renderMarkers(); }
     catch(e){ alert('되돌리기 실패: ' + e.message); }
   };
 }
@@ -1230,16 +1230,24 @@ function askConfirm(msg){
     box.querySelector('#acNo').onclick = function(){ done(false); };
   });
 }
+/* 처리자 기록: 대시보드 안이면 접속 이메일, 대시보드 밖이면 담당자 성함(이 브라우저에 기억해 두어 다음엔 묻지 않음) */
+function whoIsEditing(){
+  if(userEmail) return userEmail;
+  let n = '';
+  try{ n = localStorage.getItem('yoonsmap_user_name') || ''; }catch(e){}
+  if(!n){
+    try{ n = (prompt('담당자 성함을 입력하세요') || '').trim(); }catch(e){}
+    if(n){ try{ localStorage.setItem('yoonsmap_user_name', n); }catch(e){} }
+  }
+  return n || '(성함 미입력)';
+}
 async function setCenterStatus(c, status){
   if(status === 'removed'){
     const ok = await askConfirm('"'+c.name+'"을(를) 해지 센터로 확인하고 지도에서 제거할까요?\n저장하면 지도를 보는 모든 사람에게 반영됩니다.\n(실수라면 "🚫 해지 센터 보기"에서 복원할 수 있습니다)');
     if(!ok) return;
   }
   try{
-    if(!userEmail){   // 대시보드 밖에서 열었을 때: 누가 처리했는지 남기기 위해 한 번 물어본다
-      try{ userEmail = (prompt('처리 기록에 남길 본인 이메일을 입력하세요') || '').trim(); }catch(e){}
-    }
-    await postCall({action:'setMapStatus', code:c.code, name:c.name, status:status, by:userEmail || '(이메일 미확인)'});
+    await postCall({action:'setMapStatus', code:c.code, name:c.name, status:status, by:whoIsEditing()});
     if(status === 'removed'){ c.st = 'rem'; c.why = c.why || '해지 확인'; showStatus('🚫 "'+c.name+'"을(를) 지도에서 제거했습니다. (해지 센터 보기에서 복원할 수 있습니다)'); }
     else { delete c.st; delete c.why; showStatus('✅ "'+c.name+'"을(를) 정상 센터로 표시합니다.'); }
     try{ localStorage.removeItem('yoonsmap_centers_cache_v1'); }catch(e){}
@@ -1268,7 +1276,7 @@ function startCenterMove(c){
     if(distanceMeters(base, ll) > 3000){ alert('원본 위치에서 3km 넘게는 옮길 수 없습니다.'); return; }
     if(!confirm(c.name+' 위치를 '+formatDistance(d)+' 옮길까요?'+(d>=500?'\n※ 500m 이상 큰 이동입니다. 맞는지 확인해 주세요.':'')+'\n저장하면 지도를 보는 모든 사람에게 반영됩니다.')) return;
     const lat = Number(ll.getLat().toFixed(6)), lng = Number(ll.getLng().toFixed(6));
-    postCall({action:'saveCenterPos', code:c.code, lat:lat, lng:lng}).then(function(){
+    postCall({action:'saveCenterPos', code:c.code, name:c.name, lat:lat, lng:lng, by:whoIsEditing()}).then(function(){
       if(!c.adj){ c.olat = c.lat; c.olng = c.lng; }
       c.lat = lat; c.lng = lng; c.adj = 1; renderMarkers();
     }).catch(function(err){ alert('위치 저장 실패: ' + err.message); });
