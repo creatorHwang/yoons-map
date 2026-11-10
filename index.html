@@ -1016,15 +1016,21 @@ async function saveDraft(){
   try{
     if(type === 'circle'){ geo = {lat:Number(draft.center.getLat().toFixed(6)), lng:Number(draft.center.getLng().toFixed(6)), r:Math.round(draft.shape.getRadius())}; }
     else {
-      // 그리기 도구가 만든 꼭짓점은 LatLng 가 아니라 단순 객체일 수 있어 여러 형태를 읽고, 위도/경도가 뒤바뀌었으면 바로잡는다
-      const pick = (p, names) => { for(const n of names){ const v = (typeof p[n] === 'function') ? p[n]() : p[n]; if(typeof v === 'number' && isFinite(v)) return v; } return NaN; };
+      // 그리기 도구가 만든 꼭짓점은 위도/경도가 아니라 카카오 내부 좌표(WCONGNAMUL, 수십만 단위 숫자)로 들어온다 → 카카오 변환 함수로 위도/경도로 바꾼다
       const raw = draft.shape.getPath();
       console.log('[영업구역] 꼭짓점 원본 샘플', raw && raw[0], '개수', raw && raw.length);
-      const path = raw.map(p=>{
-        let la = pick(p, ['getLat','lat','y','Ma']), lo = pick(p, ['getLng','lng','x','La']);
-        if(la > 100 && lo < 100){ const t = la; la = lo; lo = t; }          // 뒤바뀐 경우
-        return [Number(la.toFixed(6)), Number(lo.toFixed(6))];
-      });
+      const toLL = (p) => {
+        if(p && typeof p.getLat === 'function') return [p.getLat(), p.getLng()];          // 일반 LatLng
+        const nums = Object.keys(p||{}).map(k=>p[k]).filter(v=>typeof v === 'number' && isFinite(v));
+        if(nums.length < 2) return [NaN, NaN];
+        const a = nums[0], b = nums[1];                                                   // 순서: x(가로), y(세로)
+        if(Math.abs(a) > 1000 || Math.abs(b) > 1000){                                     // 내부 좌표 → 위경도
+          const ll = new kakao.maps.Coords(a, b).toLatLng();
+          return [ll.getLat(), ll.getLng()];
+        }
+        return (a > 100) ? [b, a] : [a, b];                                               // 이미 위경도인 경우(경도가 100 넘으면 x=경도)
+      };
+      const path = raw.map(p=>{ const r = toLL(p); return [Number(r[0].toFixed(6)), Number(r[1].toFixed(6))]; });
       geo = {path: path};
       console.log('[영업구역] 저장할 값(처음 2점)', path.slice(0,2), '총', path.length);
     }
