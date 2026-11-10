@@ -1016,10 +1016,17 @@ async function saveDraft(){
   try{
     if(type === 'circle'){ geo = {lat:Number(draft.center.getLat().toFixed(6)), lng:Number(draft.center.getLng().toFixed(6)), r:Math.round(draft.shape.getRadius())}; }
     else {
-      // 그리기 도구가 만든 꼭짓점은 LatLng 가 아니라 {x:경도, y:위도} 형태일 수 있어 둘 다 읽는다
-      const lat = p => (typeof p.getLat === 'function') ? p.getLat() : p.y;
-      const lng = p => (typeof p.getLng === 'function') ? p.getLng() : p.x;
-      geo = {path: draft.shape.getPath().map(p=>[Number(Number(lat(p)).toFixed(6)), Number(Number(lng(p)).toFixed(6))])};
+      // 그리기 도구가 만든 꼭짓점은 LatLng 가 아니라 단순 객체일 수 있어 여러 형태를 읽고, 위도/경도가 뒤바뀌었으면 바로잡는다
+      const pick = (p, names) => { for(const n of names){ const v = (typeof p[n] === 'function') ? p[n]() : p[n]; if(typeof v === 'number' && isFinite(v)) return v; } return NaN; };
+      const raw = draft.shape.getPath();
+      console.log('[영업구역] 꼭짓점 원본 샘플', raw && raw[0], '개수', raw && raw.length);
+      const path = raw.map(p=>{
+        let la = pick(p, ['getLat','lat','y','Ma']), lo = pick(p, ['getLng','lng','x','La']);
+        if(la > 100 && lo < 100){ const t = la; la = lo; lo = t; }          // 뒤바뀐 경우
+        return [Number(la.toFixed(6)), Number(lo.toFixed(6))];
+      });
+      geo = {path: path};
+      console.log('[영업구역] 저장할 값(처음 2점)', path.slice(0,2), '총', path.length);
     }
   }catch(e){ console.error(e); terrMsg('도형 좌표를 읽지 못했습니다: ' + e.message + ' — 다시 그려 주세요.'); return; }
   if(btn){ btn.disabled = true; btn.textContent = '저장 중…'; }
@@ -1031,7 +1038,7 @@ async function saveDraft(){
     terrMsg('✅ 저장되었습니다', '#166534');
   }catch(e){
     console.error(e);
-    terrMsg('저장 실패: ' + e.message);
+    terrMsg('저장 실패: ' + e.message + (geo && geo.path ? ' (첫 점: ' + JSON.stringify(geo.path[0]) + ', ' + geo.path.length + '개)' : ''));
     if(btn){ btn.disabled = false; btn.textContent = '💾 저장'; }
   }
 }
